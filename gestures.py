@@ -32,6 +32,7 @@ class HandGesture:
     center: tuple[float, float]
     palm_size: float
     pinch_ratio: float | None
+    pinch_point: tuple[float, float]
     is_pinching: bool = False
 
 
@@ -55,7 +56,8 @@ class PinchDetector:
             ratio = None
             if palm_size >= MIN_PALM_SIZE_PIXELS:
                 ratio = dist(thumb, index) / palm_size
-            current_hands.append(HandGesture(-1, center, palm_size, ratio))
+            pinch_point = ((thumb[0] + index[0]) / 2, (thumb[1] + index[1]) / 2)
+            current_hands.append(HandGesture(-1, center, palm_size, ratio, pinch_point))
 
         matches = self._match_hands(current_hands)
         for hand, previous_id in zip(current_hands, matches):

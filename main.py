@@ -62,6 +62,26 @@ def log_camera_frame(camera, frame, frame_number):
     )
 
 
+def draw_rectangle_interaction(frame, interaction):
+    """Render the rectangle and instructions only on the display copy."""
+    rectangle = interaction.rectangle
+    if rectangle is not None:
+        color = (0, 255, 255) if interaction.state == "CREATING" else (255, 200, 0)
+        cv2.rectangle(
+            frame,
+            (round(rectangle.left), round(rectangle.top)),
+            (round(rectangle.right), round(rectangle.bottom)),
+            color, 2, cv2.LINE_AA,
+        )
+    lines = (f"Rectangle: {interaction.state.replace('_', ' ')}", interaction.instructions)
+    for row, text in enumerate(lines):
+        position = (12, 60 + row * 24)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Show the Reality Loom camera preview with hand landmarks."
@@ -91,10 +111,12 @@ def main():
             # Import only when requested so camera-only mode never loads MediaPipe.
             from hand_tracking import HandTracker, draw_hand_landmarks
             from gestures import PinchDetector
+            from interaction import RectangleInteraction
 
             # Check the model before opening the camera.
             tracker = HandTracker()
             pinch_detector = PinchDetector()
+            interaction = RectangleInteraction()
         camera, frame = open_camera(args.camera)
         if camera is None:
             print(
@@ -105,6 +127,8 @@ def main():
 
         cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
         print("Press Q or Escape, or close the preview window, to exit.")
+        if tracker is not None:
+            print("Pinch both hands to create a rectangle. Press R to clear it.")
         debug_frame_count = 0
 
         while True:
@@ -119,11 +143,15 @@ def main():
                 hand_gestures = pinch_detector.update(
                     result.hand_landmarks, frame.shape[1], frame.shape[0]
                 )
+                interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
                 draw_hand_landmarks(preview_frame, result, hand_gestures)
+                draw_rectangle_interaction(preview_frame, interaction)
             cv2.imshow(WINDOW_TITLE, preview_frame)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
+            if tracker is not None and key in (ord("r"), ord("R")):
+                interaction.reset()
 
             # Some backends raise an error when the user has closed the window.
             try:

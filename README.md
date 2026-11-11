@@ -3,7 +3,8 @@
 A simple live camera preview with hand landmarks from MediaPipe Tasks Hand
 Landmarker. It detects up to two hands, draws their 21 landmarks and connections,
 and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN` or
-`PINCH` label. It does not save images or video.
+`PINCH` label. Pinch with both hands to create one rectangle, then release either
+hand to place it. It does not save images or video.
 
 ## Set up the local environment
 
@@ -88,8 +89,8 @@ For command help:
 
 Bring your thumb tip and index fingertip together to pinch. Each hand has an
 independent `OPEN` or `PINCH` state. While pinching, a thicker yellow line connects
-the thumb tip and index fingertip. These are visual indicators only; pinching
-does not trigger an action.
+the thumb tip and index fingertip. Two simultaneous pinches control rectangle
+creation as described below.
 
 `gestures.py` converts landmark coordinates to image pixels using both frame
 dimensions. It divides the thumb/index distance by the palm size, measured from
@@ -115,8 +116,43 @@ starts OPEN and can immediately enter PINCH if its fingertips are close enough.
 Simple spatial matching can confuse identities when hands overlap, cross, or
 move very quickly. Perspective and a hand turned edge-on can also change the 2D
 palm measurement. Thresholds are starting values to verify with your live feed.
-No smoothing filters are applied. `--no-tracking` disables gesture detection and
+No smoothing is applied to pinch states. Rectangle corner positions use light
+smoothing. `--no-tracking` disables gesture detection, rectangle interaction, and
 all hand overlays along with MediaPipe.
+
+## Create one rectangle
+
+The preview shows the current rectangle state and a short instruction:
+
+1. **READY:** pinch with both tracked hands to start. Each thumb/index midpoint
+   becomes one opposite corner of the rectangle.
+2. **CREATING:** keep both hands pinching and move them to resize the yellow
+   rectangle. Corners stay inside the image, and crossing them cannot create
+   negative width or height.
+3. Release either pinch while both hands are still tracked. The last preview is
+   kept as **PLACED** if its width and height are each at least 40 pixels.
+   A smaller rectangle is discarded.
+4. A placed rectangle remains fixed even when hands move or disappear. Press
+   **R** to clear it; only one rectangle can exist.
+5. After R, a discarded small rectangle, or tracking loss during creation, the
+   state is **WAITING FOR RELEASE**. Show two visible OPEN hands to return to
+   READY, then pinch both again. Missing hands do not count as released hands.
+
+During creation, losing either original track ID or seeing a replacement ID
+cancels the unfinished rectangle instead of placing it. The existing spatial
+hand matching still has limits when hands overlap or cross quickly.
+
+`interaction.py` contains the rectangle geometry and state, without OpenCV or
+MediaPipe dependencies. Named settings near the top are:
+
+- `MIN_RECTANGLE_SIZE_PIXELS = 40.0`: minimum width **and** height for placement.
+- `POSITION_SMOOTHING = 0.35`: how much each new corner position contributes per
+  frame; smaller values reduce jitter but add lag, and `1.0` disables smoothing.
+
+Smoothing follows each track ID before the corners are sorted. The release frame
+does not move the rectangle because opening fingers can shift the midpoint.
+All rendering uses the display copy; raw camera frames remain untouched. There
+is no dragging, freezing of frames, or recording.
 
 ## Diagnose a black preview
 
@@ -164,6 +200,8 @@ packages have not been changed for this diagnosis.
 - With the **Reality Loom** window focused, press **Q** or **Escape** to exit.
 - Closing the preview window also exits.
 - Press **Ctrl+C** in the terminal to stop the program.
+- With tracking enabled, press **R** to clear or cancel the rectangle. Show both
+  hands OPEN before starting another rectangle.
 
 ## Troubleshooting
 
@@ -196,11 +234,16 @@ runner, without importing OpenCV, MediaPipe, or a camera. They cover activation,
 release, hysteresis, image/hand scales, result reordering, spatial association,
 missing-hand resets, and degenerate palm size.
 
+Rectangle tests also run without a camera or MediaPipe. They cover creation and
+placement, midpoint coordinates, position smoothing, release-to-rearm, R resets,
+minimum dimensions, crossed corners, bounds, result reordering, tracking loss,
+and replacement hands. The camera-only mode remains independent of interaction.
+
 To repeat the checks without opening a camera:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m py_compile .\main.py .\hand_tracking.py .\gestures.py .\tests\test_gestures.py
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\hand_tracking.py .\gestures.py .\interaction.py .\tests
 .\.venv\Scripts\python.exe -c "import cv2, mediapipe, main, hand_tracking; print('Imports OK')"
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe .\main.py --help
@@ -229,5 +272,29 @@ For the live manual test:
 9. Run with `--no-tracking --debug-camera` and confirm the plain preview and
    limited camera logs still work without hand or gesture overlays.
 
-The live camera preview, Camo compatibility, hand tracking, and pinch thresholds
-still require your manual confirmation. Automated checks did not access the camera.
+For the rectangle manual test, run:
+
+```powershell
+.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
+```
+
+1. Pinch both hands while keeping them visible and separated. Check CREATING and
+   move both hands to resize the yellow rectangle.
+2. Move the corners across each other and toward the frame edges. Check that the
+   outline stays in bounds and never flips into negative dimensions. If tracking
+   loses a hand, expect cancellation instead.
+3. Release either pinch with both hands still visible. Check PLACED and that moving
+   or pinching again does not change the rectangle.
+4. Press R while both hands are pinching. Check WAITING FOR RELEASE and that held
+   pinches cannot restart creation. Show both hands OPEN, then pinch to try again.
+5. Create a rectangle narrower or shorter than 40 pixels and release. Check that
+   it is discarded and requires both hands to open before retrying.
+6. During creation, move one hand out of view. Check that the unfinished rectangle
+   disappears. Bring it back while pinching; creation must remain blocked until
+   both hands are shown OPEN.
+7. Repeat Q, Escape, window closing, and Ctrl+C exit checks. Also verify that
+   `--no-tracking --debug-camera` shows the plain camera feed without interaction.
+
+The live camera preview, Camo compatibility, hand tracking, pinch thresholds, and
+rectangle interaction still require your manual confirmation. Automated checks
+did not access the camera.

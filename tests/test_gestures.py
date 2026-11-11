@@ -45,6 +45,11 @@ class PinchDetectorTests(unittest.TestCase):
         self.assertTrue(self.state_for(PINCH_CLOSE_THRESHOLD - 0.01).is_pinching)
         self.assertFalse(self.state_for(PINCH_OPEN_THRESHOLD + 0.01).is_pinching)
 
+    def test_pinch_midpoint_is_in_image_pixels(self):
+        state = self.state_for(0.2)
+        self.assertAlmostEqual(state.pinch_point[0], 326)
+        self.assertAlmostEqual(state.pinch_point[1], 368)
+
     def test_hysteresis_retains_previous_state_between_thresholds(self):
         for ratio in (BETWEEN_THRESHOLDS, PINCH_CLOSE_THRESHOLD + 0.01):
             self.assertFalse(self.state_for(ratio).is_pinching)
