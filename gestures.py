@@ -43,6 +43,10 @@ class PinchDetector:
         self._hands = {}
         self._next_id = 0
 
+    def reset(self):
+        """Forget associations and pinch states; future hands receive fresh IDs."""
+        self._hands.clear()
+
     def update(self, hands, frame_width, frame_height):
         """Return states in the current result order, while retaining matched IDs."""
         current_hands = []

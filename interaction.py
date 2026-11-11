@@ -70,6 +70,17 @@ class RectangleInteraction:
         self._corners = {}
         self.state = "WAITING_FOR_RELEASE"
 
+    def prepare_camera_reconnect(self):
+        """Cancel unfinished work, retaining only a placed rectangle provisionally."""
+        placed = self.rectangle if self.state in ("PLACED", "WAITING_FOR_RELEASE") else None
+        self.reset()
+        self.rectangle = placed
+
+    def finish_camera_reconnect(self, previous_size, current_size):
+        """Discard saved geometry if the recovered frame has different dimensions."""
+        if previous_size != current_size:
+            self.reset()
+
     def update(self, hands, frame_width, frame_height):
         """Use gesture IDs, pinch states, and thumb/index midpoints from this frame."""
         if self.state == "PLACED":
@@ -82,7 +93,7 @@ class RectangleInteraction:
 
         if self.state == "WAITING_FOR_RELEASE":
             if len(hands) == 2 and all(not hand.is_pinching for hand in hands):
-                self.state = "READY"
+                self.state = "PLACED" if self.rectangle is not None else "READY"
             return
 
         if self.state == "READY":

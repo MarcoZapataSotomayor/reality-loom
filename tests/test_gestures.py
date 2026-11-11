@@ -90,6 +90,13 @@ class PinchDetectorTests(unittest.TestCase):
         self.assertNotEqual(returned.track_id, first.track_id)
         self.assertFalse(returned.is_pinching)
 
+    def test_explicit_reset_forgets_pinch_and_association(self):
+        first = self.state_for(0.2)
+        self.detector.reset()
+        returned = self.state_for(BETWEEN_THRESHOLDS)
+        self.assertNotEqual(returned.track_id, first.track_id)
+        self.assertFalse(returned.is_pinching)
+
     def test_matching_considers_both_hands_together(self):
         first = self.detector.update(
             [make_hand(0.2, (300, 360)), make_hand(0.8, (460, 360))], WIDTH, HEIGHT,

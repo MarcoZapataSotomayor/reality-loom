@@ -152,6 +152,39 @@ class RectangleInteractionTests(unittest.TestCase):
         self.assertEqual(self.interaction.state, "CREATING")
         self.assertEqual(self.interaction.rectangle, original)
 
+    def test_camera_reconnect_cancels_creation_and_requires_open_hands(self):
+        self.update(pair())
+        self.interaction.prepare_camera_reconnect()
+        self.interaction.finish_camera_reconnect((WIDTH, HEIGHT), (WIDTH, HEIGHT))
+        self.assertIsNone(self.interaction.rectangle)
+        self.update(pair())
+        self.assertEqual(self.interaction.state, "WAITING_FOR_RELEASE")
+        self.update(pair(False))
+        self.assertEqual(self.interaction.state, "READY")
+
+    def test_same_size_reconnect_keeps_placement_but_requires_release(self):
+        self.update(pair())
+        self.update(pair(False))
+        placed = self.interaction.rectangle
+        # Retrying a failed attempt must not discard the provisionally saved box.
+        self.interaction.prepare_camera_reconnect()
+        self.interaction.prepare_camera_reconnect()
+        self.interaction.finish_camera_reconnect((WIDTH, HEIGHT), (WIDTH, HEIGHT))
+        self.update(pair())
+        self.assertEqual(self.interaction.state, "WAITING_FOR_RELEASE")
+        self.assertEqual(self.interaction.rectangle, placed)
+        self.update(pair(False))
+        self.assertEqual(self.interaction.state, "PLACED")
+        self.assertEqual(self.interaction.rectangle, placed)
+
+    def test_changed_size_reconnect_clears_placed_rectangle(self):
+        self.update(pair())
+        self.update(pair(False))
+        self.interaction.prepare_camera_reconnect()
+        self.interaction.finish_camera_reconnect((WIDTH, HEIGHT), (640, 480))
+        self.assertIsNone(self.interaction.rectangle)
+        self.assertEqual(self.interaction.state, "WAITING_FOR_RELEASE")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,12 +2,16 @@
 
 import argparse
 import sys
+import time
 
 import cv2
+
+from camera_recovery import CameraReconnect
 
 
 WINDOW_TITLE = "Reality Loom"
 DEBUG_FRAME_LIMIT = 5
+DEBUG_LOG_INTERVAL_SECONDS = 2.0
 
 
 def open_camera(camera_index):
@@ -62,6 +66,33 @@ def log_camera_frame(camera, frame, frame_number):
     )
 
 
+class CameraDebugLogger:
+    """Log five startup frames, then at most one frame every two seconds."""
+
+    def __init__(self):
+        self._frame_number = 0
+        self._last_log_time = None
+
+    def report(self, camera, frame):
+        self._frame_number += 1
+        now = time.monotonic()
+        if (self._frame_number <= DEBUG_FRAME_LIMIT
+                or self._last_log_time is None
+                or now - self._last_log_time >= DEBUG_LOG_INTERVAL_SECONDS):
+            log_camera_frame(camera, frame, self._frame_number)
+            self._last_log_time = now
+
+
+def draw_camera_status(frame, message, instructions):
+    """Clearly label the last image while live capture is paused."""
+    for row, text in enumerate((message, instructions)):
+        position = (12, 32 + row * 26)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+
 def draw_rectangle_interaction(frame, interaction):
     """Render the rectangle and instructions only on the display copy."""
     rectangle = interaction.rectangle
@@ -100,12 +131,13 @@ def main():
     parser.add_argument(
         "--debug-camera",
         action="store_true",
-        help=f"log backend and raw pixel statistics for the first {DEBUG_FRAME_LIMIT} frames",
+        help="log raw camera statistics for five frames, then at most every two seconds",
     )
     args = parser.parse_args()
 
     camera = None
     tracker = None
+    recovery = None
     try:
         if not args.no_tracking:
             # Import only when requested so camera-only mode never loads MediaPipe.
@@ -126,28 +158,35 @@ def main():
             return 1
 
         cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
-        print("Press Q or Escape, or close the preview window, to exit.")
+        print("Press C to reconnect this camera. Press Q or Escape, or close the window, to exit.")
         if tracker is not None:
             print("Pinch both hands to create a rectangle. Press R to clear it.")
-        debug_frame_count = 0
+        debug_logger = CameraDebugLogger()
+        camera_error = None
 
         while True:
-            if args.debug_camera and debug_frame_count < DEBUG_FRAME_LIMIT:
-                debug_frame_count += 1
-                log_camera_frame(camera, frame, debug_frame_count)
-
             # Keep the captured BGR image intact for diagnostics and future reads.
             preview_frame = frame.copy()
-            if tracker is not None:
-                result = tracker.detect(preview_frame)
-                hand_gestures = pinch_detector.update(
-                    result.hand_landmarks, frame.shape[1], frame.shape[0]
+            if recovery is not None:
+                draw_camera_status(preview_frame, "Reconnecting camera...", "Q / Escape: exit")
+            elif camera_error is not None:
+                draw_camera_status(
+                    preview_frame, camera_error,
+                    "Check Camo Studio / iPad. C: retry | Q / Escape: exit",
                 )
-                interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
-                draw_hand_landmarks(preview_frame, result, hand_gestures)
-                draw_rectangle_interaction(preview_frame, interaction)
+            else:
+                if args.debug_camera:
+                    debug_logger.report(camera, frame)
+                if tracker is not None:
+                    result = tracker.detect(preview_frame)
+                    hand_gestures = pinch_detector.update(
+                        result.hand_landmarks, frame.shape[1], frame.shape[0]
+                    )
+                    interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
+                    draw_hand_landmarks(preview_frame, result, hand_gestures)
+                    draw_rectangle_interaction(preview_frame, interaction)
             cv2.imshow(WINDOW_TITLE, preview_frame)
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(30 if recovery is not None or camera_error else 1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
             if tracker is not None and key in (ord("r"), ord("R")):
@@ -160,13 +199,53 @@ def main():
             except cv2.error:
                 break
 
-            success, frame = camera.read()
-            if not success or frame is None or frame.size == 0:
+            if key in (ord("c"), ord("C")) and recovery is None:
+                previous_frame_size = (frame.shape[1], frame.shape[0])
+                if tracker is not None:
+                    pinch_detector.reset()
+                    interaction.prepare_camera_reconnect()
+                old_camera = camera
+                camera = None  # Ownership moves to the worker until it publishes a result.
+                recovery = CameraReconnect(old_camera, args.camera, open_camera)
+                camera_error = None
+                continue
+
+            if recovery is not None:
+                # Display/pump events before polling, so even fast attempts show status.
+                result = recovery.poll()
+                if result is not None:
+                    recovery = None
+                    camera = result.camera
+                    if result.error is not None:
+                        print(f"{result.error} Check Camo Studio and the iPad; press C to retry.")
+                        camera_error = "Camera reconnection failed."
+                    else:
+                        frame = result.frame
+                        if tracker is not None:
+                            interaction.finish_camera_reconnect(
+                                previous_frame_size, (frame.shape[1], frame.shape[0])
+                            )
+                        debug_logger = CameraDebugLogger()
+                        print("Camera reconnected. Show both hands OPEN to resume gestures."
+                              if tracker is not None else "Camera reconnected.")
+                continue
+
+            if camera_error is not None:
+                continue
+
+            try:
+                success, next_frame = camera.read()
+            except cv2.error as error:
+                print(f"Camera read failed: {error}")
+                success, next_frame = False, None
+            if not success or next_frame is None or next_frame.size == 0:
+                camera_error = "Could not read a camera frame."
                 print(
-                    "Could not read a camera frame. The preview has stopped. "
-                    "Check the iPad connection and Camo Studio, then run the command again."
+                    "Could not read a camera frame. Check Camo Studio and the iPad; "
+                    "press C to reconnect or Q / Escape to exit."
                 )
-                return 1
+            else:
+                frame = next_frame
 
         return 0
     except KeyboardInterrupt:
@@ -180,14 +259,18 @@ def main():
         return 1
     finally:
         try:
-            if tracker is not None:
-                tracker.close()
+            if recovery is not None:
+                recovery.close()
         finally:
             try:
-                if camera is not None:
-                    camera.release()
+                if tracker is not None:
+                    tracker.close()
             finally:
-                cv2.destroyAllWindows()
+                try:
+                    if camera is not None:
+                        camera.release()
+                finally:
+                    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

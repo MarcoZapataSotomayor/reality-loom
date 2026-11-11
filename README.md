@@ -177,9 +177,11 @@ DirectShow, camera `1` is OBS Virtual Camera, and camera `2` is unavailable. Kee
 camera `0` for this comparison. The program never changes indices automatically.
 
 `--debug-camera` prints the actual backend, frame width and height, data type, and
-minimum/mean/maximum pixel values for up to the first five successfully captured
-frames. Statistics come from the original BGR image before inference or drawing.
-Overlays are drawn on a separate preview copy. No frames or recordings are saved.
+minimum/mean/maximum pixel values for the first five successfully captured frames,
+then at most once every two seconds. The startup count restarts after a successful
+reconnection. Statistics come from the original BGR image before inference or
+drawing; paused/recovery status images are not counted as new frames. Overlays
+are drawn on a separate preview copy. No frames or recordings are saved.
 
 Code inspection found no full-frame clearing or replacement in inference or
 drawing. Inference creates a separate RGB array. Drawing previously modified the
@@ -195,11 +197,49 @@ backend switch. Nonzero statistics also do not prove that the image displays
 correctly. The live cause remains uncertain until the two runs are compared;
 packages have not been changed for this diagnosis.
 
+## Reconnect the selected camera
+
+Press **C** in the preview to release and reopen the camera selected by
+`--camera`. For `--camera 0`, recovery only opens index `0`; it never opens OBS
+or another index as a workaround. It uses the existing DirectShow-first,
+Media-Foundation-second fallback without changing capture format settings.
+
+The window shows **Reconnecting camera...** while a worker releases the old
+capture and attempts to open a replacement. The main thread continues handling
+Q, Escape, window closing, and Ctrl+C. The last raw image is used only as a
+clearly labeled status background; hand inference and interaction are paused.
+Repeated C presses do not start overlapping attempts.
+
+If reconnection fails, the window displays a failure message and instructions
+to check Camo Studio and the iPad connection. Press C to retry the same index,
+or Q/Escape to exit. A camera read failure also pauses the preview with a retry
+message. The program does not automatically reconnect, including when frames
+are completely black. Failure to open the camera at initial startup still
+reports an error and exits as before.
+
+Each reconnect attempt forgets gesture hand associations and pinch history, and
+cancels unfinished rectangle creation. A placed rectangle is retained only if
+the next successfully captured frame has exactly the same width and height.
+A dimension change clears it. Failed attempts do not discard the provisionally
+saved placed rectangle. After success, two visible OPEN hands are required before
+interaction resumes. A retained rectangle then remains placed until R clears it.
+Recovery also works with `--no-tracking`, without importing MediaPipe or a model.
+
+Camera release/open calls depend on the driver. They run off the UI thread during
+reconnection. If you exit during an attempt, the window closes and its result is
+canceled; Python waits for the pending driver call to return so the worker can
+release any newly opened capture. Normal frame reading remains synchronous.
+
+The report that switching indices restores the feed suggests a reopening issue,
+but does not prove the cause. C provides an explicit same-index retry to test it;
+it is not a confirmed fix for the black-frame regression.
+
 ## Controls
 
 - With the **Reality Loom** window focused, press **Q** or **Escape** to exit.
 - Closing the preview window also exits.
 - Press **Ctrl+C** in the terminal to stop the program.
+- Press **C** to reconnect the current camera, or retry a failed reconnection.
 - With tracking enabled, press **R** to clear or cancel the rectangle. Show both
   hands OPEN before starting another rectangle.
 
@@ -211,8 +251,9 @@ packages have not been changed for this diagnosis.
 - Check Windows camera privacy settings and allow camera access for desktop apps.
 - On Windows, the program tries DirectShow first. If opening the camera or reading
   its first frame fails, it releases the device and tries Media Foundation.
-- If frames stop arriving, the program exits with a message. Check the connection
-  and restart the preview.
+- If a camera read fails, the preview pauses with a message. Check the connection
+  and press C to retry, or exit. If frames are black but reads succeed, press C
+  explicitly and compare the debug statistics; darkness alone is not a failure.
 - If the model is missing, run the model download command above. If MediaPipe
   cannot load it, download the model again and check the dependency installation.
 - If hands are not detected, keep the whole hand visible with good lighting and
@@ -239,11 +280,17 @@ placement, midpoint coordinates, position smoothing, release-to-rearm, R resets,
 minimum dimensions, crossed corners, bounds, result reordering, tracking loss,
 and replacement hands. The camera-only mode remains independent of interaction.
 
+Recovery tests use fake captures, controlled worker threads, mocked window calls,
+and synthetic pixels. They check release-before-reopen, same-index retries,
+failed reconnections, exit controls while pending, eventual capture cleanup,
+gesture/rectangle resets, dimension-dependent placement retention, and periodic
+debug logging. These checks do not access a camera or initialize a model.
+
 To repeat the checks without opening a camera:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\hand_tracking.py .\gestures.py .\interaction.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\interaction.py .\tests
 .\.venv\Scripts\python.exe -c "import cv2, mediapipe, main, hand_tracking; print('Imports OK')"
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe .\main.py --help
@@ -267,8 +314,7 @@ For the live manual test:
    state. Expect a reset if tracking temporarily loses a hand.
 7. Test Q, Escape, closing the window, and Ctrl+C in separate runs. Restart after
    each test to check that the camera was released.
-8. If the camera connection is interrupted, check for a clear failure message and
-   that the program exits.
+8. If a camera read fails, check for a clear message, then retry with C or exit.
 9. Run with `--no-tracking --debug-camera` and confirm the plain preview and
    limited camera logs still work without hand or gesture overlays.
 
@@ -295,6 +341,23 @@ For the rectangle manual test, run:
 7. Repeat Q, Escape, window closing, and Ctrl+C exit checks. Also verify that
    `--no-tracking --debug-camera` shows the plain camera feed without interaction.
 
-The live camera preview, Camo compatibility, hand tracking, pinch thresholds, and
-rectangle interaction still require your manual confirmation. Automated checks
-did not access the camera.
+For the recovery manual test, use the same run command above:
+
+1. With camera 0 selected, press C. Check the Reconnecting camera... status and
+   that terminal messages mention only index 0, with the usual backend fallback.
+2. If the preview is black, compare raw debug statistics before and after C. Let
+   it run for several seconds to see the bounded periodic logs. Do not assume
+   a successful reopen guarantees a visible image.
+3. During rectangle creation, press C. Check that the unfinished rectangle is
+   canceled, and held pinches cannot create another until both hands are OPEN.
+4. Place a rectangle and press C again. If dimensions are unchanged, it should
+   remain in place and resume in PLACED after both hands are OPEN. If dimensions
+   change, it should be cleared. The program does not request a size change.
+5. If a retry fails, restore Camo/iPad availability and press C again. Check that
+   the window allows retry or exit. Repeat Q, Escape, window close, and Ctrl+C
+   during recovery and after a failure in separate runs.
+6. Repeat with `--no-tracking --debug-camera`; reconnection should remain usable
+   without hand overlays, rectangle interaction, or model loading.
+
+Live recovery and its effect on the intermittent black preview require your
+manual confirmation. Automated checks did not access the camera.
