@@ -116,6 +116,14 @@ def draw_rectangle_interaction(frame, interaction):
                     0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
 
+def draw_fist_feedback(frame, message):
+    position = (12, frame.shape[0] - 16)
+    cv2.putText(frame, message, position, cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(frame, message, position, cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Show the Reality Loom camera preview with hand landmarks."
@@ -147,11 +155,13 @@ def main():
             from hand_tracking import HandTracker, draw_hand_landmarks
             from gestures import PinchDetector
             from interaction import RectangleInteraction
+            from freeze_control import FreezeController
 
             # Check the model before opening the camera.
             tracker = HandTracker()
             pinch_detector = PinchDetector()
             interaction = RectangleInteraction()
+            freeze_control = FreezeController()
         camera, frame = open_camera(args.camera)
         if camera is None:
             print(
@@ -165,6 +175,7 @@ def main():
         if tracker is not None:
             print("Pinch both hands to create a rectangle. Press R to clear it.")
             print("Press F while placed to toggle LIVE / FROZEN content.")
+            print("Or open a hand fully, then hold a fist outside the placed rectangle for 0.8 s.")
         debug_logger = CameraDebugLogger()
         camera_error = None
 
@@ -188,20 +199,20 @@ def main():
                         result.hand_landmarks, frame.shape[1], frame.shape[0]
                     )
                     interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
+                    freeze_control.update(hand_gestures, interaction)
                     interaction.composite_frozen(preview_frame)
                     # Draw every overlay above the composite, never into the raw frame.
                     draw_hand_landmarks(preview_frame, result, hand_gestures)
                     draw_rectangle_interaction(preview_frame, interaction)
+                    if interaction.rectangle is not None:
+                        draw_fist_feedback(preview_frame, freeze_control.message)
             cv2.imshow(WINDOW_TITLE, preview_frame)
             key = cv2.waitKey(30 if recovery is not None or camera_error else 1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
             if tracker is not None and key in (ord("r"), ord("R")):
                 interaction.reset()
-            if (tracker is not None and key in (ord("f"), ord("F"))
-                    and recovery is None and camera_error is None):
-                # The raw frame is still untouched by the displayed overlays.
-                interaction.toggle_frozen(frame)
+                freeze_control.reset()
 
             # Some backends raise an error when the user has closed the window.
             try:
@@ -215,6 +226,7 @@ def main():
                 if tracker is not None:
                     pinch_detector.reset()
                     interaction.prepare_camera_reconnect()
+                    freeze_control.reset()
                 old_camera = camera
                 camera = None  # Ownership moves to the worker until it publishes a result.
                 recovery = CameraReconnect(old_camera, args.camera, open_camera)
@@ -243,6 +255,11 @@ def main():
 
             if camera_error is not None:
                 continue
+
+            if tracker is not None:
+                # Keyboard and fist requests share one raw-image action. C/R and
+                # exit checks above cancel pending requests before this point.
+                freeze_control.apply(interaction, frame, keyboard=key in (ord("f"), ord("F")))
 
             try:
                 success, next_frame = camera.read()

@@ -79,7 +79,14 @@ def draw_hand_landmarks(bgr_frame, result, hand_gestures=None):
             cv2.circle(bgr_frame, point, 4, (0, 180, 255), -1, cv2.LINE_AA)
 
         if gesture is not None:
-            gesture_label = "PINCH" if gesture.is_pinching else "OPEN"
+            if gesture.is_fist:
+                gesture_label = "FIST"
+            elif gesture.is_pinching:
+                gesture_label = "PINCH"
+            elif gesture.is_open_hand:
+                gesture_label = "OPEN"
+            else:
+                gesture_label = "NEUTRAL"
             color = (0, 255, 255) if gesture.is_pinching else (255, 255, 255)
             text_size, _ = cv2.getTextSize(gesture_label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
             label_position = (

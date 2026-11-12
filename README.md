@@ -2,11 +2,12 @@
 
 A simple live camera preview with hand landmarks from MediaPipe Tasks Hand
 Landmarker. It detects up to two hands, draws their 21 landmarks and connections,
-and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN` or
-`PINCH` label. Pinch with both hands to create one rectangle, then release either
+and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN`,
+`PINCH`, `FIST`, or `NEUTRAL` label. Pinch with both hands to create one rectangle, then release either
 hand to place it. A fresh one-hand pinch inside the placed rectangle lets you drag
-it without resizing. Press F while placed to freeze only its image content in
-memory; video outside it remains live. It does not save images or video.
+it without resizing. Press F, or deliberately hold a fist outside the placed
+rectangle, to freeze/unfreeze its image content in memory. Video outside it
+remains live. It does not save images or video.
 
 ## Set up the local environment
 
@@ -90,7 +91,7 @@ For command help:
 ## Pinch detection
 
 Bring your thumb tip and index fingertip together to pinch. Each hand has an
-independent `OPEN` or `PINCH` state. While pinching, a thicker yellow line connects
+independent pinch state. While pinching, a thicker yellow line connects
 the thumb tip and index fingertip. Two simultaneous pinches control rectangle
 creation as described below.
 
@@ -101,8 +102,8 @@ distance from the camera and avoids distortion from the frame's aspect ratio.
 
 The named constants near the top of `gestures.py` are easy to adjust:
 
-- `PINCH_CLOSE_THRESHOLD = 0.30`: an open hand enters PINCH at or below this ratio.
-- `PINCH_OPEN_THRESHOLD = 0.45`: a pinched hand returns to OPEN at or above this
+- `PINCH_CLOSE_THRESHOLD = 0.30`: a released pinch activates at or below this ratio.
+- `PINCH_OPEN_THRESHOLD = 0.45`: a pinch releases at or above this
   ratio. Between the thresholds, the previous state is retained (hysteresis).
 - `MIN_PALM_SIZE_PIXELS = 1.0`: smaller palm measurements reset to OPEN instead of
   dividing by a near-zero value.
@@ -113,7 +114,13 @@ Hand state follows nearby palm centers, rather than MediaPipe result positions
 or left/right labels. For at most two hands, the detector checks all possible
 associations, prefers the most valid matches, then the least total movement.
 A hand absent from a frame loses its state immediately. A new or reappearing hand
-starts OPEN and can immediately enter PINCH if its fingertips are close enough.
+starts with a released pinch and can immediately pinch if its fingertips are close enough.
+
+Pinch release is separate from the explicit full-open pose used to rearm fist
+activation. The OPEN label now means four extended fingers and an extended thumb.
+FIST means folded fingers with the thumb near the palm. A released pinch that
+meets neither pose is NEUTRAL. An extended-finger thumb/index pinch is PINCH,
+not FIST. Existing pinch creation and drag/release behavior is unchanged.
 
 Simple spatial matching can confuse identities when hands overlap, cross, or
 move very quickly. Perspective and a hand turned edge-on can also change the 2D
@@ -222,6 +229,60 @@ frame dimensions. Changed dimensions or any other rectangle reset clear both.
 Failed reconnect attempts retain the provisional rectangle and crop, and both
 hands must still be OPEN after recovery before interaction resumes.
 
+## Toggle content with a deliberate fist
+
+1. Place a rectangle and keep the hand you will use outside it. Show that hand
+   fully OPEN first, with all four fingers extended and the thumb extended.
+2. Close it into a fist with the thumb near the palm. Keep the palm center outside
+   the rectangle and hold the pose continuously for **0.8 seconds**.
+3. The bottom of the preview shows hold progress, then a brief LIVE/FROZEN activation
+   message. The same action and raw-image capture are used by F and the fist.
+4. Holding the fist longer does not toggle again. Fully open the triggering hand
+   before starting another hold; a neutral pose or a released pinch is not enough.
+
+Both hands have independent timers tied to their tracked IDs. A pose interruption
+or moving the palm inside the rectangle cancels progress and restarts the full
+hold duration when the fist is valid again. Hand loss or replacement also cancels
+progress and requires a new full-open observation. A hand first appearing as a
+fist cannot activate until it has been seen OPEN.
+
+If both hands qualify, content toggles once. All ongoing fist holds are consumed
+by a toggle, so two fists cannot immediately undo each other; each must open before
+its next activation. F remains available without the gesture, but using it cancels
+and disarms pending fist holds. If F and a fist qualify in the same frame, there
+is only one toggle.
+
+Creation, dragging, recovery, and rearming disable fist activation and require a
+full-open observation after returning to PLACED. A valid pinch grab is processed
+first and wins over a fist activation in the same frame. R and C clear pending
+holds and rearm state. Pinching itself never requests a content toggle; it keeps
+its existing creation/dragging role. `--no-tracking` loads no gesture logic.
+
+The geometry and timing settings are named near the top of `gestures.py`:
+
+- `FIST_HOLD_SECONDS = 0.8`: continuous hold duration, measured with a monotonic
+  clock, independent of frame count.
+- `FIST_FINGER_TIP_MAX = 0.85`: maximum fingertip distance from the palm center,
+  divided by palm size, for each folded finger.
+- `FIST_CURL_MARGIN = 0.10`: allowed radial margin beyond the finger's middle joint
+  when comparing tip/joint distances from the wrist, in palm lengths.
+- `FIST_THUMB_TIP_MAX = 0.85`: maximum thumb-tip distance from the palm center,
+  divided by palm size.
+- `OPEN_FINGER_EXTENSION_MIN = 0.25`: minimum extra wrist distance of each tip
+  beyond its middle joint, in palm lengths, for the full-open pose.
+- `OPEN_THUMB_EXTENSION_MIN = 0.20`: minimum thumb extension away from the
+  little-finger knuckle, in palm lengths. OPEN also requires released tip separation.
+
+`freeze_control.py` combines keyboard/gesture requests into one toggle per frame.
+Its `ACTIVATION_FEEDBACK_SECONDS = 1.2` controls the brief confirmation message.
+
+These are simple 2D landmark heuristics, not a trained pose classifier. Keep the
+palm visible, fingers clearly folded or extended, and use good lighting. Edge-on
+hands, occluded fingertips, unusual thumb positions, or overlapping hands can
+produce missed or incorrect poses. The existing spatial hand matching can also
+confuse IDs during crossings. Thresholds are starting values to check on your
+live feed; pinch release alone deliberately does not rearm the fist gesture.
+
 ## Diagnose a black preview
 
 Run these commands separately, closing the preview between runs. Both use the
@@ -314,6 +375,8 @@ it is not a confirmed fix for the black-frame regression.
   hands OPEN before starting another rectangle.
 - Press **F** while PLACED to toggle LIVE/FROZEN content. Drop a dragged rectangle
   before toggling. No images are written to disk.
+- Or fully open a hand, then hold a closed fist outside the PLACED rectangle for
+  0.8 seconds. Fully open that hand again before another activation.
 
 ## Troubleshooting
 
@@ -362,6 +425,13 @@ and recovery retention/clearing. Preview-loop checks verify inference sees live
 input, overlays stay above the frozen composite, and F is ignored during recovery
 and in camera-only mode. No camera or MediaPipe model is initialized by these tests.
 
+Fist tests cover palm-relative geometry, full-open versus pinch/neutral poses,
+scale/aspect-ratio changes, monotonic timing at different frame intervals, single
+activation per hold, interruptions, lost/replaced/reordered IDs, simultaneous fists,
+drag priority, and keyboard deduplication. Preview tests also check that R/C cancel
+completed holds before they toggle, and that the existing raw frozen content remains
+independent of overlays and later frames.
+
 Recovery tests use fake captures, controlled worker threads, mocked window calls,
 and synthetic pixels. They check release-before-reopen, same-index retries,
 failed reconnections, exit controls while pending, eventual capture cleanup,
@@ -372,7 +442,7 @@ To repeat the checks without opening a camera:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\interaction.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\tests
 .\.venv\Scripts\python.exe -c "import cv2, mediapipe, main, hand_tracking; print('Imports OK')"
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe .\main.py --help
@@ -483,5 +553,23 @@ For the frozen-content manual test, use:
 7. Check F with no rectangle and with `--no-tracking`, and repeat Q, Escape,
    window closing, and Ctrl+C exit checks.
 
-Live frozen content and its interaction with dragging/recovery require your
+For the fist manual test, use the same run command above:
+
+1. Place a rectangle, show one fully OPEN hand outside it, then hold a closed fist.
+   Check the hold progress and a single toggle after about 0.8 seconds.
+2. Keep holding. Check there are no repeated toggles. Try a neutral hand or a
+   released pinch; neither should rearm it. Fully open, then hold a fist again.
+3. Make a thumb/index pinch while extending the other fingers. Check it does not
+   activate the fist toggle. Try the fist palm center inside the rectangle as well.
+4. Interrupt a partial hold or move the hand out of view. Reintroduce it as a fist;
+   check it must be opened again before a new complete hold.
+5. Arm both hands and hold two fists. Check only one toggle occurs and both need
+   to open again. Press F near the end of a hold; check no immediate second toggle.
+6. Try a pinch grab as another hand's hold completes. Check dragging wins. Test
+   creation, dragging, R, and C; held fists must not activate until a full-open
+   observation is made again while PLACED.
+7. Repeat the existing frozen-image, inference, exit-control, recovery, diagnostic,
+   and `--no-tracking` checks. No camera behavior or dependency changes are needed.
+
+Live fist recognition and its interaction with frozen content require your
 manual confirmation. Automated checks did not access the camera.

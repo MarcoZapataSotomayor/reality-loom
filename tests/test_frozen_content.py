@@ -163,7 +163,8 @@ class FrozenContentTests(unittest.TestCase):
 
 
 class FrozenPreviewTests(unittest.TestCase):
-    def preview(self, interaction, frames, keys, draw_hands=None, recover=None, tracking=True):
+    def preview(self, interaction, frames, keys, draw_hands=None, recover=None, tracking=True,
+                gesture_frames=None):
         """Exercise the real preview loop without native cameras, models, or windows."""
         inputs, shown = [], []
         camera, tracker, pinch = MagicMock(), MagicMock(), MagicMock()
@@ -174,7 +175,10 @@ class FrozenPreviewTests(unittest.TestCase):
             return SimpleNamespace(hand_landmarks=[])
 
         tracker.detect.side_effect = detect
-        pinch.update.return_value = []
+        if gesture_frames is None:
+            pinch.update.return_value = []
+        else:
+            pinch.update.side_effect = gesture_frames
         fake_tracking = SimpleNamespace(HandTracker=lambda: tracker,
                                         draw_hand_landmarks=draw_hands or MagicMock())
         with ExitStack() as stack:
@@ -189,7 +193,7 @@ class FrozenPreviewTests(unittest.TestCase):
                 original_import = builtins.__import__
 
                 def guard(name, *args, **kwargs):
-                    if name in ("hand_tracking", "gestures", "interaction", "mediapipe"):
+                    if name in ("hand_tracking", "gestures", "interaction", "freeze_control", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 
@@ -264,6 +268,60 @@ class FrozenPreviewTests(unittest.TestCase):
         self.assertEqual(inputs, [])
         self.assertEqual(labels, [])
         np.testing.assert_array_equal(shown[1], frame((60, 70, 80)))
+
+    def test_simultaneous_fist_and_f_key_use_one_raw_frame_toggle(self):
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        images = [frame((10 + index, 20, 30)) for index in range(4)]
+        gestures = [[pose_hand("open")], [pose_hand("fist")],
+                    [pose_hand("fist")], [pose_hand("fist")]]
+        with patch("freeze_control.time.monotonic", side_effect=[0.0, 1.0, 1.81, 3.0]), \
+                patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
+            inputs, shown, labels = self.preview(
+                interaction, images, [-1, -1, ord("F"), ord("q")], gesture_frames=gestures,
+            )
+            toggle.assert_called_once()
+        np.testing.assert_array_equal(interaction.frozen_image, images[2][120:280, 100:300])
+        self.assertTrue(any("FROZEN activated" in label for label in labels))
+        for actual, expected in zip(inputs, images):
+            np.testing.assert_array_equal(actual, expected)
+
+    def test_r_cancels_a_fist_that_completes_in_the_same_frame(self):
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        gestures = [[pose_hand("open")], [pose_hand("fist")],
+                    [pose_hand("fist")], [pose_hand("fist")]]
+        with patch("freeze_control.time.monotonic", side_effect=[0.0, 1.0, 1.81, 3.0]), \
+                patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
+            self.preview(interaction, [frame() for _ in gestures], [-1, -1, ord("r"), ord("q")],
+                         gesture_frames=gestures)
+            toggle.assert_not_called()
+        self.assertIsNone(interaction.rectangle)
+        self.assertIsNone(interaction.frozen_image)
+
+    def test_c_cancels_completed_hold_before_recovery_without_changing_content(self):
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        interaction.toggle_frozen(frame())
+        captured = interaction.frozen_image
+        job = MagicMock(poll=MagicMock(return_value=None))
+
+        def recover(camera, index, opener):
+            camera.release()
+            return job
+
+        gestures = [[pose_hand("open")], [pose_hand("fist")], [pose_hand("fist")]]
+        with patch("freeze_control.time.monotonic", side_effect=[0.0, 1.0, 1.81]), \
+                patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
+            self.preview(interaction, [frame() for _ in gestures], [-1, -1, ord("c"), ord("q")],
+                         gesture_frames=gestures, recover=recover)
+            toggle.assert_not_called()
+        self.assertIs(interaction.frozen_image, captured)
+        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
+        job.close.assert_called_once()
 
 
 if __name__ == "__main__":
