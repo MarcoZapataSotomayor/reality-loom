@@ -1,738 +1,308 @@
 # Reality Loom
 
-A simple live camera preview with hand landmarks from MediaPipe Tasks Hand
-Landmarker. It detects up to two hands, draws their 21 landmarks and connections,
-and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN`,
-`PINCH`, `FIST`, or `NEUTRAL` label. Pinch with both hands to create one rectangle, then release either
-hand to place it. A fresh one-hand pinch inside the placed rectangle lets you drag
-it without resizing; two pinches at opposite corner handles resize it. Press F,
-or deliberately hold a fist outside the placed
-rectangle, to freeze/unfreeze its image content in memory. Video outside it
-remains live. A fixed toolbar or keys 1-4 select ORIGINAL, GRAYSCALE, PIXELATE, or
-NEON effects inside the panel only. It does not save images or video.
+A live camera workspace with up to four independent panels. Create with two
+pinches, select/drag with a fresh one-hand pinch, resize at opposite handles,
+and toggle the active panel between LIVE and FROZEN with F or a deliberate fist.
+Each panel owns its geometry, original frozen crop, and filter.
 
-## Set up the local environment
+No images, video, panel history, or session state are saved to disk.
 
-Run these commands from the project directory in PowerShell. Use the existing
-`.venv`; activation is optional because the commands call its Python directly.
+## Local setup
+
+Use PowerShell from the project directory and the existing local environment:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-Verified with Python **3.14.8**, MediaPipe **1.2.2**, and
-`opencv-contrib-python` **5.0.0.93** (`cv2` reports **5.0.0**, with Windows GUI
-support). Package pins are recorded in `requirements.txt`; pip installs their
-dependencies automatically. NumPy **2.5.4** was already installed through the
-existing dependencies and is used by the panel filters; no new package is needed.
+Verified environment: Python 3.14.8, MediaPipe 1.2.2,
+`opencv-contrib-python` 5.0.0.93 (`cv2` 5.0.0 with Windows GUI support),
+and the already installed NumPy 2.5.4.
 
-MediaPipe requires `opencv-contrib-python`, which includes desktop GUI support.
-Only one OpenCV distribution should be installed because they share the `cv2`
-namespace. This environment was migrated from `opencv-python` by uninstalling it
-before installing the requirements. If restoring an older environment that still
-has `opencv-python`, run this command **before** installing the requirements:
+Keep only `opencv-contrib-python` installed: OpenCV distributions share the
+`cv2` namespace. This environment already migrated from `opencv-python`.
+If restoring an older environment with that package, uninstall it before
+installing the requirements:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip uninstall opencv-python
 ```
 
-Do not install another OpenCV variant alongside `opencv-contrib-python`.
+## Restore the model
 
-## Download or restore the model
+The official HandLandmarker full float16 model comes from
+[Google's model documentation](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker#models).
+The application uses MediaPipe Tasks, not the legacy solutions API.
 
-The official model is the **HandLandmarker (full), float16** bundle linked in
-[Google's Hand Landmarker model documentation](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker#models).
-The application uses the [MediaPipe Tasks Python API](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker?tab=Python),
-not the legacy solutions API.
-
-The model is stored locally at `models/hand_landmarker.task`. Download it once,
-or restore it after cloning the project:
+Download once, or restore after cloning:
 
 ```powershell
 New-Item -ItemType Directory -Path .\models -Force | Out-Null
 Invoke-WebRequest -Uri 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task' -OutFile '.\models\hand_landmarker.task'
 ```
 
-The downloaded model is **7,819,105 bytes**, with SHA-256:
+The verified model has 7,819,105 bytes and SHA-256:
 
 ```text
 fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
 ```
 
-The source URL uses Google's `latest` model, so a future download may have a
-different hash. Model binaries are excluded from Git. The application never
-downloads a model at startup; it shows a restore instruction if the file is
-missing. The model path is resolved relative to `hand_tracking.py`.
+Google's `latest` URL may change in future. Model binaries are ignored by Git.
+The application never downloads a model at startup. A missing model produces
+an actionable restore message. Its path is relative to `hand_tracking.py`.
 
-## Run the preview
+## Run
 
-Keep Camo Studio running on Windows with your iPad connected. Make sure Camo
-Studio shows the iPad feed before starting the preview.
-
-From the project directory in PowerShell, run:
+Keep Camo Studio running on Windows with the iPad connected, and confirm its
+own preview shows the feed. Then run:
 
 ```powershell
-.\.venv\Scripts\python.exe .\main.py
+.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
 ```
 
-The default camera index is `0`. Try these commands one at a time to find the
-camera provided by Camo Studio; camera indices depend on your computer:
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0
-.\.venv\Scripts\python.exe .\main.py --camera 1
-.\.venv\Scripts\python.exe .\main.py --camera 2
-```
-
-For command help:
+Camera 0 is the currently reported Camo setup. Camera 1 is OBS Virtual Camera;
+camera 2 is unavailable on this computer. Camera indices vary between computers.
+The default is 0; `--camera 1` and `--camera 2` remain explicit alternatives.
+The application never switches indices automatically.
 
 ```powershell
 .\.venv\Scripts\python.exe .\main.py --help
-```
-
-## Pinch detection
-
-Bring your thumb tip and index fingertip together to pinch. Each hand has an
-independent pinch state. While pinching, a thicker yellow line connects
-the thumb tip and index fingertip. Two simultaneous pinches control rectangle
-creation as described below.
-
-`gestures.py` converts landmark coordinates to image pixels using both frame
-dimensions. It divides the thumb/index distance by the palm size, measured from
-the wrist to the middle-finger base knuckle. This ratio reduces sensitivity to
-distance from the camera and avoids distortion from the frame's aspect ratio.
-
-The named constants near the top of `gestures.py` are easy to adjust:
-
-- `PINCH_CLOSE_THRESHOLD = 0.30`: a released pinch activates at or below this ratio.
-- `PINCH_OPEN_THRESHOLD = 0.45`: a pinch releases at or above this
-  ratio. Between the thresholds, the previous state is retained (hysteresis).
-- `MIN_PALM_SIZE_PIXELS = 1.0`: smaller palm measurements reset to OPEN instead of
-  dividing by a near-zero value.
-- `MAX_HAND_MATCH_DISTANCE = 2.0`: the maximum movement for matching a hand between
-  frames, in palm lengths.
-
-Hand state follows nearby palm centers, rather than MediaPipe result positions
-or left/right labels. For at most two hands, the detector checks all possible
-associations, prefers the most valid matches, then the least total movement.
-A hand absent from a frame loses its state immediately. A new or reappearing hand
-starts with a released pinch and can immediately pinch if its fingertips are close enough.
-
-Pinch release is separate from the explicit full-open pose used to rearm fist
-activation. The OPEN label now means four extended fingers and an extended thumb.
-FIST means folded fingers with the thumb near the palm. A released pinch that
-meets neither pose is NEUTRAL. An extended-finger thumb/index pinch is PINCH,
-not FIST. Existing pinch creation and drag/release behavior is unchanged.
-
-Simple spatial matching can confuse identities when hands overlap, cross, or
-move very quickly. Perspective and a hand turned edge-on can also change the 2D
-palm measurement. Thresholds are starting values to verify with your live feed.
-No smoothing is applied to pinch states. Rectangle corner positions use light
-smoothing. `--no-tracking` disables gesture detection, rectangle interaction, and
-all hand overlays along with MediaPipe.
-
-## Create one rectangle
-
-The preview shows the current rectangle state and a short instruction:
-
-1. **READY:** pinch with both tracked hands to start. Each thumb/index midpoint
-   becomes one opposite corner of the rectangle.
-2. **CREATING:** keep both hands pinching and move them to resize the yellow
-   rectangle. Corners stay inside the image, and crossing them cannot create
-   negative width or height.
-3. Release either pinch while both hands are still tracked. The last preview is
-   kept as **PLACED** if its width and height are each at least 40 pixels.
-   A smaller rectangle is discarded.
-4. A placed rectangle stays fixed until a fresh one-hand grab inside it or two
-   pinches at opposite corner handles. Use the drag/resize controls below, or
-   press **R** to clear it. Two-hand creation
-   is available only when no rectangle exists.
-5. After R, a discarded small rectangle, or tracking loss during creation, the
-   state is **WAITING FOR RELEASE**. Show two visible OPEN hands to return to
-   READY, then pinch both again. Missing hands do not count as released hands.
-
-During creation, losing either original track ID or seeing a replacement ID
-cancels the unfinished rectangle instead of placing it. The existing spatial
-hand matching still has limits when hands overlap or cross quickly.
-
-`interaction.py` contains rectangle geometry and state without camera or MediaPipe
-dependencies. Only frozen-image scaling imports the already installed OpenCV
-package. Named settings near the top are:
-
-- `MIN_RECTANGLE_SIZE_PIXELS = 40.0`: minimum width **and** height for placement.
-- `POSITION_SMOOTHING = 0.35`: how much each new corner position contributes per
-  frame; smaller values reduce jitter but add lag, and `1.0` disables smoothing.
-- `DRAG_SMOOTHING = 0.35`: position smoothing while dragging a placed rectangle.
-  It starts fresh at each grab and does not change the width or height.
-- `RESIZE_HIT_RADIUS_PIXELS = 28.0`: maximum distance from each pinch midpoint to
-  its corner handle when starting or upgrading to a resize.
-- `RESIZE_SMOOTHING = 0.35`: how much new corner positions contribute while resizing.
-
-Smoothing follows each track ID before the corners are sorted. The release frame
-does not move the rectangle because opening fingers can shift the midpoint.
-All rendering uses the display copy; raw camera frames remain untouched.
-
-## Drag the placed rectangle
-
-1. Move one OPEN hand's thumb/index midpoint inside the placed rectangle, then
-   pinch. The same track ID must have been seen OPEN on the previous frame.
-   The label changes from **PLACED** to **DRAGGING**.
-2. Move that pinched hand to translate the rectangle. The original grab offset
-   is retained, so the rectangle does not snap to the hand. Light smoothing
-   reduces jitter, and the entire rectangle stays within the frame bounds.
-3. Release the pinch to drop it immediately at its current displayed position.
-   Width and height do not change. Opening fingers does not move the rectangle.
-4. To grab again, make another OPEN-to-PINCH transition inside the rectangle.
-   Pinching outside and moving inside cannot start a drag. A hand appearing
-   already pinched also cannot grab until it has been observed OPEN first.
-
-Only one hand controls a drag. Result reordering does not change ownership.
-The second hand can upgrade it to resizing only when both pointers satisfy the
-opposite-corner conditions below. If both hands make eligible inside grabs away
-from those handles in the same frame, the
-lowest track ID wins. This rule is deterministic and does not depend on which
-result appears first.
-
-Losing the controlling track stops dragging without moving the rectangle. Held
-pinches cannot take over. Show the currently visible hands OPEN before trying a
-new grab; no visible hands does not count as a release. A single visible OPEN
-hand can rearm dragging after hand loss. The existing spatial tracking can still
-confuse identities when hands overlap or cross quickly.
-
-**R** clears the rectangle and all interaction history, then requires both hands
-OPEN before another two-hand creation. **C** stops a drag and keeps its current
-rectangle provisionally, using the existing camera recovery rules: unchanged
-dimensions retain it, changed dimensions clear it, and both hands must be OPEN
-before interaction resumes. `--no-tracking` keeps the plain camera preview.
-
-If a normal frame-size change leaves room for the placed rectangle, it is moved
-inside the new bounds without resizing. If its fixed size cannot fit, it is
-cleared safely and both hands must be OPEN before creating again.
-
-## Resize with opposite corner handles
-
-Small corner handles appear on a placed rectangle and stay visible during dragging
-and resizing. Use either diagonal: top-left/bottom-right or top-right/bottom-left.
-
-1. Pinch with both hands, with each thumb/index midpoint within 28 pixels of one
-   of the diagonally opposite handles. The state becomes **RESIZING**, separately
-   from the LIVE/FROZEN content mode. Resize matching has priority over dragging.
-2. You can also start with a one-hand drag near a corner, then pinch the opposite
-   corner with the other hand. Both pointers must be near their opposite handles
-   on the upgrade frame. A drag elsewhere inside the rectangle stays a drag.
-3. Corner-to-pointer offsets are retained so entering RESIZING does not jump.
-   Each track ID keeps its corner role until release, even when results reorder.
-4. Keep both pinches held to resize. Light smoothing reduces jitter. Coordinates
-   stay inside the frame, and width and height each stay at least 40 pixels.
-5. If pointers cross, corner roles do not swap: the rectangle stops shrinking at
-   the minimum size rather than flipping its image. Width and height can change
-   independently; there is no aspect-ratio lock.
-6. Release either pinch, or lose a controlling track, to finish at the last valid
-   geometry. Replacement tracks do not take over. The state becomes WAITING FOR
-   RELEASE; show two visible hands with both pinches released before another
-   manipulation. A held remaining pinch cannot fall directly into dragging.
-
-Resize activation uses the current two pinches and their proximity to handles;
-unlike a one-hand grab, it does not require a fresh transition on that exact frame.
-The release gate after finishing still prevents held pinches from restarting it.
-R clears the rectangle. C cancels resizing and applies the existing recovery and
-both-release rules, retaining geometry/content only when frame dimensions match.
-
-In LIVE mode, the resized rectangle shows current camera pixels at its current
-location with the selected filter. In FROZEN mode, each rendered size is generated from the **original
-saved crop**, never from a previously resized result. The saved crop is not
-recaptured or modified. Independent width/height changes can **stretch the frozen
-image**. With ORIGINAL selected, returning to the original pixel dimensions displays
-the original pixels. Other filters are always derived from that source again.
-Dragging afterward transports the current sized content without further changes
-to rectangle dimensions. F is ignored during resizing, and fist holds are canceled
-and require a new full-open observation after returning to PLACED.
-
-## Select a panel filter
-
-A compact fixed toolbar sits near the bottom of the preview, above the fist
-feedback line. Its caption shows the selected filter, and the active button is
-highlighted. It does not move with the rectangle. Each hand has a small pointer
-at its thumb/index midpoint: white when released and yellow when pinching.
-
-| Key / button | Effect inside the rectangle |
-| --- | --- |
-| 1 ORIGINAL | Current source colors, without an effect. |
-| 2 GRAYSCALE | BGR luminance shown in all three channels. |
-| 3 PIXELATE | Coarse averaged blocks with sharp pixel boundaries. |
-| 4 NEON | Colored edge outlines on a black background. |
-
-When idle (**READY**) or **PLACED**, move a released pinch pointer onto a button,
-then pinch. The track ID must have been observed with its pinch released first;
-holding a pinch, moving it into a button, or moving between buttons while pinched
-does not select again. Release before another selection. This is pinch release,
-not the full-open pose required to arm the fist gesture.
-
-Keys **1-4** in the focused preview use the same selection action. Selection works
-before creating a rectangle. If two hands select simultaneously, the lowest track
-ID wins. An explicit keyboard choice wins over a simultaneous button pinch.
-
-Toolbar selection has priority over panel creation, drag-start, corner grabs,
-and fist toggling. The entire selection frame is consumed, including if the panel
-overlaps the toolbar or the selected button is already active. Pending fist
-progress is canceled. Pinches held on the selection frame stay excluded from panel
-manipulation until they release, so they cannot become a delayed drag or resize.
-
-Selection and keys 1-4 are disabled during creation, dragging, resizing, camera
-recovery/errors, and release-to-rearm states. The caption shows **selection paused**.
-For gesture selection, a released pinch must be seen again after returning to idle;
-an already-held pinch cannot activate a button as a busy state ends.
-
-The selected filter starts as ORIGINAL and survives **R** clearing and **C** recovery,
-even if recovery clears the rectangle. It applies to the next rectangle as well.
-`--no-tracking` remains a plain diagnostic camera view with no toolbar, pointers,
-panel effects, model loading, or gesture interaction.
-
-`filters.py` returns an independent `uint8`, three-channel BGR image at the requested
-panel size. LIVE effects use the current raw camera region. FROZEN effects use the
-unchanged original saved crop, scaled to the current geometry. Filter switching and
-resizing never accumulate effects or overwrite that source; ORIGINAL restores the
-unfiltered content. F/fist capture still saves raw, unfiltered pixels in memory.
-Outside the panel, video stays live and unfiltered apart from the visible overlays.
-Inference always receives the raw live image. Landmarks, borders, handles, toolbar,
-pointers, and instructions are drawn above the effect on the display copy.
-
-The implementations use only the existing OpenCV and NumPy packages. Named settings
-in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`, and
-`NEON_COLOR_BGR`. NEON is a simple edge effect; it does not retain previous frames.
-
-## Toggle LIVE and FROZEN content
-
-Press **F** while the rectangle is **PLACED** to switch its content from **LIVE**
-to **FROZEN**, or back again. Content mode is shown on a separate line from the
-PLACED/DRAGGING/RESIZING interaction state. F is ignored when there is no placed rectangle,
-while dragging or resizing, during camera recovery/rearming, or while capture is paused with
-an error. It is also ignored in `--no-tracking` mode.
-
-- **LIVE:** the rectangle shows the current camera image at its current location,
-  with the selected filter applied only there.
-  Dragging moves its outline; it does not carry an earlier live crop.
-- **FROZEN:** F copies the current rectangle region from the raw BGR camera frame,
-  before any overlays are applied to those pixels. This independent crop is the
-  only retained image. Nothing is saved to disk and no temporal history is kept.
-  Dragging carries the saved content; two-hand resizing scales from its original
-  pixels to the current geometry. Neither action recaptures the image.
-
-The rest of the preview stays live in either mode. Hand inference always uses
-the live raw camera image, even when frozen content visually covers a hand.
-The selected effect is composited onto the display copy before landmarks, borders,
-handles, toolbar, labels, and instructions are drawn, so those overlays remain visible and never
-become part of the captured image.
-
-Press F again after dropping a frozen rectangle to return to LIVE and release
-the stored crop. A later F captures new raw content at the rectangle's current
-position. **R** clears both geometry and the image. **C** cancels dragging/resizing and
-preserves frozen content only if its rectangle survives recovery with unchanged
-frame dimensions. Changed dimensions or any other rectangle reset clear both.
-Failed reconnect attempts retain the provisional rectangle and crop, and both
-hands must still be OPEN after recovery before interaction resumes.
-
-## Toggle content with a deliberate fist
-
-1. Place a rectangle and keep the hand you will use outside it. Show that hand
-   fully OPEN first, with all four fingers extended and the thumb extended.
-2. Close it into a fist with the thumb near the palm. Keep the palm center outside
-   the rectangle and hold the pose continuously for **0.8 seconds**.
-3. The bottom of the preview shows hold progress, then a brief LIVE/FROZEN activation
-   message. The same action and raw-image capture are used by F and the fist.
-4. Holding the fist longer does not toggle again. Fully open the triggering hand
-   before starting another hold; a neutral pose or a released pinch is not enough.
-
-Both hands have independent timers tied to their tracked IDs. A pose interruption
-or moving the palm inside the rectangle cancels progress and restarts the full
-hold duration when the fist is valid again. Hand loss or replacement also cancels
-progress and requires a new full-open observation. A hand first appearing as a
-fist cannot activate until it has been seen OPEN.
-
-If both hands qualify, content toggles once. All ongoing fist holds are consumed
-by a toggle, so two fists cannot immediately undo each other; each must open before
-its next activation. F remains available without the gesture, but using it cancels
-and disarms pending fist holds. If F and a fist qualify in the same frame, there
-is only one toggle.
-
-Creation, dragging, resizing, recovery, and rearming disable fist activation and require a
-full-open observation after returning to PLACED. Toolbar selection consumes the
-frame first; otherwise a valid resize is processed before a pinch grab, and either
-wins over a fist activation. Selecting a filter cancels pending fist progress.
-R and C clear pending
-holds and rearm state. Pinching itself never requests a content toggle; it keeps
-its existing creation/dragging role. `--no-tracking` loads no gesture logic.
-
-The geometry and timing settings are named near the top of `gestures.py`:
-
-- `FIST_HOLD_SECONDS = 0.8`: continuous hold duration, measured with a monotonic
-  clock, independent of frame count.
-- `FIST_FINGER_TIP_MAX = 0.85`: maximum fingertip distance from the palm center,
-  divided by palm size, for each folded finger.
-- `FIST_CURL_MARGIN = 0.10`: allowed radial margin beyond the finger's middle joint
-  when comparing tip/joint distances from the wrist, in palm lengths.
-- `FIST_THUMB_TIP_MAX = 0.85`: maximum thumb-tip distance from the palm center,
-  divided by palm size.
-- `OPEN_FINGER_EXTENSION_MIN = 0.25`: minimum extra wrist distance of each tip
-  beyond its middle joint, in palm lengths, for the full-open pose.
-- `OPEN_THUMB_EXTENSION_MIN = 0.20`: minimum thumb extension away from the
-  little-finger knuckle, in palm lengths. OPEN also requires released tip separation.
-
-`freeze_control.py` combines keyboard/gesture requests into one toggle per frame.
-Its `ACTIVATION_FEEDBACK_SECONDS = 1.2` controls the brief confirmation message.
-
-These are simple 2D landmark heuristics, not a trained pose classifier. Keep the
-palm visible, fingers clearly folded or extended, and use good lighting. Edge-on
-hands, occluded fingertips, unusual thumb positions, or overlapping hands can
-produce missed or incorrect poses. The existing spatial hand matching can also
-confuse IDs during crossings. Thresholds are starting values to check on your
-live feed; pinch release alone deliberately does not rearm the fist gesture.
-
-## Diagnose a black preview
-
-Run these commands separately, closing the preview between runs. Both use the
-same camera index, backend fallback, capture settings, and display loop.
-
-First, disable tracking entirely. This mode does not import MediaPipe or load
-the model, and it shows the camera image without hand overlays:
-
-```powershell
 .\.venv\Scripts\python.exe .\main.py --camera 0 --no-tracking --debug-camera
 ```
 
-Then run with tracking enabled (the default):
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
-```
-
-For the currently reported setup, camera `0` previously worked through
-DirectShow, camera `1` is OBS Virtual Camera, and camera `2` is unavailable. Keep
-camera `0` for this comparison. The program never changes indices automatically.
-
-`--debug-camera` prints the actual backend, frame width and height, data type, and
-minimum/mean/maximum pixel values for the first five successfully captured frames,
-then at most once every two seconds. The startup count restarts after a successful
-reconnection. Statistics come from the original BGR image before inference or
-drawing; paused/recovery status images are not counted as new frames. Overlays
-are drawn on a separate preview copy. No frames or recordings are saved.
-
-Code inspection found no full-frame clearing or replacement in inference or
-drawing. Inference creates a separate RGB array. Drawing previously modified the
-captured BGR image in place with landmarks and text; it now modifies only the
-preview copy. Camera initialization still calls `VideoCapture()` followed by
-`open(index, backend)` and does not set resolution, codec, FPS, or other capture
-properties. These findings do not establish the cause of the black preview.
-
-Compare whether both runs show the image and whether their raw pixel statistics
-differ. All-zero statistics show that those captured frames contain black pixels,
-but darkness alone is not considered a camera failure and does not trigger a
-backend switch. Nonzero statistics also do not prove that the image displays
-correctly. The live cause remains uncertain until the two runs are compared;
-packages have not been changed for this diagnosis.
-
-## Reconnect the selected camera
-
-Press **C** in the preview to release and reopen the camera selected by
-`--camera`. For `--camera 0`, recovery only opens index `0`; it never opens OBS
-or another index as a workaround. It uses the existing DirectShow-first,
-Media-Foundation-second fallback without changing capture format settings.
-
-The window shows **Reconnecting camera...** while a worker releases the old
-capture and attempts to open a replacement. The main thread continues handling
-Q, Escape, window closing, and Ctrl+C. The last raw image is used only as a
-clearly labeled status background; hand inference and interaction are paused.
-Repeated C presses do not start overlapping attempts.
-
-If reconnection fails, the window displays a failure message and instructions
-to check Camo Studio and the iPad connection. Press C to retry the same index,
-or Q/Escape to exit. A camera read failure also pauses the preview with a retry
-message. The program does not automatically reconnect, including when frames
-are completely black. Failure to open the camera at initial startup still
-reports an error and exits as before.
-
-Each reconnect attempt forgets gesture hand associations and pinch history, and
-cancels unfinished rectangle creation. A placed rectangle is retained only if
-the next successfully captured frame has exactly the same width and height.
-A dimension change clears it. Failed attempts do not discard the provisionally
-saved placed rectangle or its frozen image. If the rectangle is cleared, its
-image is released as well. After success, two visible OPEN hands are required before
-interaction resumes. A retained rectangle can then be grabbed with a fresh pinch
-or cleared with R; an interrupted drag never resumes automatically.
-Recovery also works with `--no-tracking`, without importing MediaPipe or a model.
-
-Camera release/open calls depend on the driver. They run off the UI thread during
-reconnection. If you exit during an attempt, the window closes and its result is
-canceled; Python waits for the pending driver call to return so the worker can
-release any newly opened capture. Normal frame reading remains synchronous.
-
-The report that switching indices restores the feed suggests a reopening issue,
-but does not prove the cause. C provides an explicit same-index retry to test it;
-it is not a confirmed fix for the black-frame regression.
+`--no-tracking` is a plain camera diagnostic preview: no model, panels, toolbar,
+or gesture imports. C and the exit controls remain available.
 
 ## Controls
 
-- With the **Reality Loom** window focused, press **Q** or **Escape** to exit.
-- Closing the preview window also exits.
-- Press **Ctrl+C** in the terminal to stop the program.
-- Press **C** to reconnect the current camera, or retry a failed reconnection.
-- With tracking enabled, press **R** to clear or cancel the rectangle. Show both
-  hands OPEN before starting another rectangle.
-- Press **F** while PLACED to toggle LIVE/FROZEN content. Drop a dragged rectangle
-  or finish resizing before toggling. No images are written to disk.
-- Or fully open a hand, then hold a closed fist outside the PLACED rectangle for
-  0.8 seconds. Fully open that hand again before another activation.
-- Select a filter with a fresh pinch on a toolbar button or keys **1-4** while READY
-  or PLACED. Release before another button selection. The choice survives R and C.
+| Input in the focused preview | Action |
+| --- | --- |
+| Two pinches with no panels | Create the first panel. |
+| New panel button / N | Begin explicit creation of another panel. |
+| Fresh pinch inside a panel | Select it, bring it to front, and start dragging. |
+| Both pinches at opposite active handles | Start resizing; can upgrade a drag. |
+| Filter buttons / 1-4 | Change the active panel's filter, or the new-panel default if none is active. |
+| F / deliberate fist hold | Toggle only the active panel's LIVE/FROZEN content. |
+| Delete button / Delete key | Remove only the active panel. |
+| R | Clear ALL panels and original crops; keep the default filter. |
+| C | Reconnect the selected camera; cancel pending operations/creation. |
+| Escape during new-panel creation with existing panels | Cancel the draft and keep existing panels. |
+| Escape otherwise / Q / window close / Ctrl+C | Exit. Q always exits. |
 
-## Troubleshooting
+New/Delete/filter actions are disabled during manipulation, explicit creation
+with existing panels, recovery, or release-to-rearm. At the four-panel limit,
+New is dimmed and attempts report the limit without adding or deleting anything.
 
-- If the camera cannot open, check Camo Studio and the iPad connection, then try
-  another camera index.
-- Close other applications that may be using the camera.
-- Check Windows camera privacy settings and allow camera access for desktop apps.
-- On Windows, the program tries DirectShow first. If opening the camera or reading
-  its first frame fails, it releases the device and tries Media Foundation.
-- If a camera read fails, the preview pauses with a message. Check the connection
-  and press C to retry, or exit. If frames are black but reads succeed, press C
-  explicitly and compare the debug statistics; darkness alone is not a failure.
-- If the model is missing, run the model download command above. If MediaPipe
-  cannot load it, download the model again and check the dependency installation.
-- If hands are not detected, keep the whole hand visible with good lighting and
-  move it farther from the camera.
+## Create, select, and delete panels
 
-## Validation and manual checks
+`MAX_PANELS = 4` is defined in `panels.py`. Panels have stable session IDs, shown
+on their borders. Bringing a panel forward does not change its ID. Deleted IDs
+are not reused in the same run, including after clear-all or camera-size changes.
 
-Syntax, imports, dependency consistency, and `--help` were checked. The model
-initialized and processed three blank synthetic frames in `VIDEO` mode, reporting
-zero hands. Inference uses RGB input converted from the live raw BGR frame;
-OpenCV composites content and draws results on a separate display copy. Timestamps
-come from a monotonic clock and increase by at least one millisecond per frame.
+With no panels, the original two-hand workflow remains available. Both pinches
+start a draft using their thumb/index midpoints as opposite corners. Move while
+both pinches stay active, then release either while both tracks remain visible.
+The last preview is committed if width and height are each at least 40 pixels.
+Creation allows crossed corners by sorting them; invalid small drafts are discarded.
 
-MediaPipe printed native diagnostic warnings about feedback tensors and landmark
-projection during the synthetic check; initialization and inference completed.
+New panel enters an explicit creation mode. Existing panels remain visible but
+cannot be selected, dragged, resized, filtered, frozen, or deleted during it.
+The toolbar activation pinch is consumed: show two visible released pinches
+before creating. A failed draft or tracking loss keeps existing panels and waits
+for both releases before retrying. Escape cancels the draft when panels exist.
+Without existing panels, Escape retains its normal exit behavior.
 
-The gesture tests use synthetic landmarks and the standard-library `unittest`
-runner, without importing OpenCV, MediaPipe, or a camera. They cover activation,
-release, hysteresis, image/hand scales, result reordering, spatial association,
-missing-hand resets, and degenerate palm size.
+Successful creation adds and selects the new panel at the front. A fresh
+OPEN-to-PINCH transition inside an existing panel selects the topmost panel
+under that pointer and starts a no-snap drag. If hands select different panels
+simultaneously, the lowest track ID wins. Only the active panel has resize handles.
+An ongoing operation cannot transfer to another hand or another panel.
 
-Rectangle tests also run without a camera or MediaPipe. They cover creation and
-placement, midpoint coordinates, position smoothing, release-to-rearm, R resets,
-minimum dimensions, crossed corners, bounds, result reordering, tracking loss,
-and replacement hands. Dragging tests cover fresh grab transitions, outside
-pinches, offsets, fixed dimensions, smoothing resets, bounds, release, hand loss,
-ownership, simultaneous grabs, and R/C resets. The camera-only mode remains
-independent of interaction.
+Delete removes only the active panel and selects the remaining topmost panel.
+R is deliberately different: it clears the entire collection and every crop.
+After New/Delete/filter actions, two visible released pinches are required before
+another manipulation. Held action pinches cannot become delayed grabs or drafts.
 
-Resize tests cover both diagonals, handle hit radius, priority over grabbing/fists,
-drag-to-resize upgrades, offsets without jumps, smoothing, bound/minimum clamps,
-fixed roles when pointers cross or results reorder, release/loss rearming, R/C,
-LIVE pixels, and scaling repeatedly from the original frozen crop.
+## Drag and resize
 
-Filter tests cover output shape/dtype down to 1x1 panels, source immutability,
-ORIGINAL identity, grayscale luminance, pixel blocks, colored neon edges, panel-only
-compositing, and frozen-source preservation across filter/size changes. Toolbar
-tests check fresh edges, held-pinch rejection, disabled-state rearming, deterministic
-selection, consumed pinches, keyboard alternatives, overlap priority, pending-fist
-cancellation, raw live inference, and selection retention after R/C. All camera
-and window entry points in preview-loop tests are mocked.
+One-hand dragging preserves the grab offset and size, with light position
+smoothing reset at every grab. Pinching outside and entering the panel cannot
+grab it. Release stops at the current position. Losing the owner stops movement
+and requires visible hands to release before another grab; there is no takeover.
 
-Frozen-content tests use synthetic BGR images and mocked camera/window calls.
-They cover independent copies, raw pixels without overlays, LIVE/FROZEN toggling,
-unchanged image identity and dimensions while moving, fractional positions, reset,
-and recovery retention/clearing. Preview-loop checks verify inference sees live
-input, overlays stay above the frozen composite, and F is ignored during recovery
-and in camera-only mode. No camera or MediaPipe model is initialized by these tests.
+Two pinches within `RESIZE_HIT_RADIUS_PIXELS = 28.0` of diagonally opposite
+active handles start RESIZING before an ordinary grab or fist activation.
+A drag can upgrade if both current pointers meet those corner conditions.
+Corner-to-pointer offsets prevent a jump, and each ID keeps its corner role.
 
-Fist tests cover palm-relative geometry, full-open versus pinch/neutral poses,
-scale/aspect-ratio changes, monotonic timing at different frame intervals, single
-activation per hold, interruptions, lost/replaced/reordered IDs, simultaneous fists,
-drag priority, and keyboard deduplication. Preview tests also check that R/C cancel
-completed holds before they toggle, and that the existing raw frozen content remains
-independent of overlays and later frames.
+Resizing stays in bounds and at least 40 pixels wide and high. Crossing pointers
+stops at the minimum instead of swapping roles or flipping the image. Release
+either pinch or lose a controlling track to keep the last valid geometry.
+Both visible hands must release before another manipulation; it never falls
+straight into dragging. One-hand dragging elsewhere still works.
 
-Recovery tests use fake captures, controlled worker threads, mocked window calls,
-and synthetic pixels. They check release-before-reopen, same-index retries,
-failed reconnections, exit controls while pending, eventual capture cleanup,
-gesture/rectangle resets, dimension-dependent placement retention, and periodic
-debug logging. These checks do not access a camera or initialize a model.
+Width and height change independently. Frozen content can stretch; there is no
+aspect-ratio lock. Geometry settings in `interaction.py` include:
 
-To repeat the checks without opening a camera:
+- `MIN_RECTANGLE_SIZE_PIXELS = 40.0`
+- `POSITION_SMOOTHING = 0.35` for creation
+- `DRAG_SMOOTHING = 0.35`
+- `RESIZE_SMOOTHING = 0.35`
+- `RESIZE_HIT_RADIUS_PIXELS = 28.0`
+
+## Per-panel content and filters
+
+LIVE samples the panel's region from the current raw live frame. FROZEN retains
+one independent raw BGR crop captured with F or a valid fist activation.
+Dragging transports that source; resizing always scales from the original crop.
+Effects never accumulate into it, and no previously resized output is saved.
+
+F is accepted only while PLACED. Raw capture excludes other panels, landmarks,
+handles, toolbar, pointers, and instructions. Inference always receives live raw
+pixels, even when frozen content visually covers a hand.
+
+Panels composite back-to-front on a fresh frame copy. Each LIVE source comes
+from raw input, never from a lower panel's composite. UI is drawn afterward.
+The HUD shows count, active ID, operation, and active LIVE/FROZEN state. Toolbar
+rows are separate from the top HUD and bottom fist feedback.
+
+| Filter button / key | Effect |
+| --- | --- |
+| 1 ORIGINAL | Unfiltered source colors. |
+| 2 GRAYSCALE | BGR luminance repeated in all three channels. |
+| 3 PIXELATE | Coarse averaged blocks with sharp pixel boundaries. |
+| 4 NEON | Colored edge outlines on black. |
+
+Each panel keeps its own selected filter. Changing the active panel does NOT
+change the default for future panels. With no active panel, filter selection
+sets that default instead. New panels inherit the default, not the previously
+active panel's filter. Clear-all keeps the default; deleted panel settings are gone.
+
+Toolbar selection requires a fresh released-pinch-to-pinch transition inside
+a button. Moving a held pinch onto it does not select. Newly appearing pinched
+tracks must release first. The lowest track ID wins simultaneous button hits;
+an explicit keyboard action wins a simultaneous gesture. A toolbar action
+consumes the entire frame before panel operations or fist activation and cancels
+pending fist progress. Keyboard shortcuts share the same action/rearm rules.
+
+Small pointer rings show thumb/index midpoints (white released, yellow pinching).
+Filters return independent uint8, three-channel BGR pixels at the panel size.
+The implementations use only the existing OpenCV/NumPy packages. Named settings
+in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`,
+and `NEON_COLOR_BGR`.
+
+## Deliberate fist toggle
+
+Fully open the triggering hand while PLACED, then hold a closed fist with its
+palm center outside the active panel for 0.8 seconds. Progress and activation
+feedback appear near the bottom. The active panel alone toggles. Sustained fists
+trigger once and require full-open rearming, not merely a released pinch.
+
+Fist detection uses folded-finger distances relative to palm size; a thumb/index
+pinch with the other fingers extended is not a fist. Hand labels are FIST, PINCH,
+OPEN (fully extended fingers and thumb), or NEUTRAL. Existing drag/creation
+release gates still use pinch release; full-open rearming is specific to fists.
+
+Pose interruption or entering the active rectangle restarts the duration.
+Hand loss/replacement requires a new OPEN observation. All ongoing fist holds
+are consumed by one toggle so two fists cannot immediately undo each other.
+F and the fist share one action per frame; F cancels pending fist progress.
+Creation, dragging, resizing, toolbar actions, R, and C cancel holds and require
+a new full-open observation before gesture activation resumes.
+
+`FIST_HOLD_SECONDS = 0.8` uses a monotonic clock, never frame count. Other named
+geometry thresholds in `gestures.py` are `FIST_FINGER_TIP_MAX`, `FIST_CURL_MARGIN`,
+`FIST_THUMB_TIP_MAX`, `OPEN_FINGER_EXTENSION_MIN`, and `OPEN_THUMB_EXTENSION_MIN`.
+`ACTIVATION_FEEDBACK_SECONDS = 1.2` is in `freeze_control.py`.
+
+## Camera recovery and diagnostics
+
+Windows capture still tries DirectShow first. Failure to open or read the first
+usable frame releases that attempt before trying Media Foundation. No resolution,
+codec, FPS, dependency, or global setting is changed by panel management.
+
+C releases and reopens the same selected index in a worker. The window displays
+Reconnecting camera... and still handles exit controls. Pending creation and
+manipulation are canceled. All committed panels, original crops, filters, order,
+and active ID survive if recovered dimensions match. A size change clears panels
+safely but keeps the new-panel default and avoids reusing IDs. Both visible hands
+must release before interaction resumes. A failed attempt allows C retry or exit.
+
+Initial startup open failure still reports an error and exits. Read failures
+pause with a retry message. Darkness alone never triggers failure or automatic
+reconnection. `--debug-camera` logs raw backend, dimensions, dtype, and pixel
+min/mean/max for five startup frames, then at most every two seconds. It restarts
+the startup count after a successful reconnect; paused status frames are not logged.
+
+To compare the black-preview regression, run camera-only mode, exit, then run
+tracking mode with the same index. Compare both raw statistics and visible images:
+
+```powershell
+.\.venv\Scripts\python.exe .\main.py --camera 0 --no-tracking --debug-camera
+.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
+```
+
+The report that switching indices restores the feed suggests a reopening issue
+but does not prove the cause. No index-switch workaround is run automatically.
+Check Camo/iPad connectivity, close other camera apps, and check Windows desktop
+camera privacy settings if opening fails.
+
+A driver call cannot be interrupted here. Exiting closes the UI and cancels
+delivery; Python waits for a pending reopen to return so its capture is released.
+Normal frame reading remains synchronous.
+
+## Tests and intentional single-panel changes
+
+`PanelCollection` stores panel data and uses one shared `RectangleInteraction`
+for creation/drag/resize. Existing low-level geometry, gesture, filtering, frozen
+content, and camera-recovery tests remain. Preview fixtures wrap their single
+panel in a collection instead of constructing a controller for every panel.
+
+Intentional preview-test changes:
+
+- Toolbar actions now wait for both visible released pinches. Freeze-after-filter
+  tests include that rearm frame instead of toggling immediately.
+- Filter retention is per panel. Only no-active selection changes the new-panel
+  default; R deletes active settings along with every panel.
+- Status includes panel count/active ID instead of a single Rectangle heading.
+- Window mocks use `waitKeyEx`, preserving full Delete-key codes on Windows.
+
+New tests cover the panel limit, stable IDs, independent state, transactional
+creation/cancellation, topmost hits, stacking and ownership, active resize
+priority, selected-only actions, clear-all, overlapping raw-source rendering,
+recovery, and consumed actions. All native camera/window/model entry points in
+preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\tests
-.\.venv\Scripts\python.exe -c "import cv2, mediapipe, main, hand_tracking; print('Imports OK')"
-.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
 ```
 
-For the live manual test:
+## Manual checks and limitations
 
-1. Start Camo Studio, connect the iPad, and run the preview with the correct camera
-   index.
-2. With no hands visible, check that the label reads `Hands: 0`.
-3. Show one hand, then two hands. Check the count and the landmarks and connections
-   on each hand. Try moving your hands slowly.
-4. Pinch with one hand, then release. Check the PINCH/OPEN label and yellow
-   thumb/index connection. Make small fingertip movements near the boundary to
-   check that the label does not rapidly flicker.
-5. Keep both hands visible; pinch one while the other stays open, then swap.
-   Move them slowly while keeping them apart to check that states stay with each
-   hand. Repeat at different distances from the camera.
-6. Remove a pinching hand while keeping the other visible. Reintroduce it with
-   separated fingers and check that it is OPEN and the other hand retains its
-   state. Expect a reset if tracking temporarily loses a hand.
-7. Test Q, Escape, closing the window, and Ctrl+C in separate runs. Restart after
-   each test to check that the camera was released.
-8. If a camera read fails, check for a clear message, then retry with C or exit.
-9. Run with `--no-tracking --debug-camera` and confirm the plain preview and
-   limited camera logs still work without hand or gesture overlays.
+1. Create the first panel, then use New/N. Keep pinches held and verify no draft
+   starts until both release. Complete another panel; existing content must stay.
+2. Cancel an in-progress new panel with Escape. Verify Q still exits, and Escape
+   exits normally when not canceling a draft or when no panels exist.
+3. Fill four panels. New must be dimmed and attempts must show the limit. Delete
+   one and create again; remaining IDs must not change or be reused.
+4. Overlap panels. Freshly pinch an overlap to select the topmost, or an exposed
+   area of a lower panel to bring it forward. Check no snap or hand takeover.
+5. Resize only the active handles, including drag-to-resize. Test release, loss
+   of a hand, crossing, minimum size, bounds, and both-release rearming.
+6. Give panels different filters and LIVE/FROZEN states. Move something in view;
+   overlapping LIVE panels must remain live, even over frozen/effected panels.
+7. Test F/fist, filters, Delete, and R. Only the active panel is affected until
+   R explicitly clears all. Test a default filter before first creation and
+   confirm new panels inherit it rather than an active panel's later changes.
+8. Test toolbar overlap/held pinches, keyboard alternatives, busy-state disabling,
+   C during creation/drag/resize, same-size recovery retention, and changed-size
+   clearing. Repeat exit controls and plain `--no-tracking`.
 
-For the rectangle manual test, run:
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
-```
-
-1. Pinch both hands while keeping them visible and separated. Check CREATING and
-   move both hands to resize the yellow rectangle.
-2. Move the corners across each other and toward the frame edges. Check that the
-   outline stays in bounds and never flips into negative dimensions. If tracking
-   loses a hand, expect cancellation instead.
-3. Release either pinch with both hands still visible. Check PLACED and that moving
-   open hands or holding a pinch from creation does not change the rectangle.
-4. Press R while both hands are pinching. Check WAITING FOR RELEASE and that held
-   pinches cannot restart creation. Show both hands OPEN, then pinch to try again.
-5. Create a rectangle narrower or shorter than 40 pixels and release. Check that
-   it is discarded and requires both hands to open before retrying.
-6. During creation, move one hand out of view. Check that the unfinished rectangle
-   disappears. Bring it back while pinching; creation must remain blocked until
-   both hands are shown OPEN.
-7. Repeat Q, Escape, window closing, and Ctrl+C exit checks. Also verify that
-   `--no-tracking --debug-camera` shows the plain camera feed without interaction.
-
-For the dragging manual test, use the same run command above:
-
-1. Place a rectangle. Move an OPEN hand inside, then pinch. Check DRAGGING and
-   that the rectangle does not jump to the hand at grab time.
-2. Move slowly toward all frame edges. Check light smoothing, unchanged dimensions,
-   and that the whole rectangle stays visible. Release to drop it without drift.
-3. Pinch outside and move inside while holding the pinch. Check that it stays
-   PLACED. Open and pinch again inside to grab.
-4. Drag with one hand while the other pinches and moves. Check that ownership
-   stays with the original hand. Move the controlling hand out of view; the
-   rectangle must stop, with no takeover by an already-pinching hand.
-5. Show visible hands OPEN, then make a new grab. A returning hand still pinching
-   should not automatically resume dragging.
-6. During a drag, press R and check clearing/rearming. Place another rectangle,
-   drag it, and press C. Check recovery preservation and that both hands must be
-   OPEN before any fresh grab.
-7. Away from opposite corner handles, confirm two-hand creation cannot replace
-   a placed rectangle, and
-   verify Q, Escape, window closing, Ctrl+C, and `--no-tracking` still work.
-
-For the resizing manual test, use the same run command above:
-
-1. Place a rectangle and check four small corner handles. Pinch near opposite
-   handles on either diagonal; check RESIZING and no jump when it begins.
-2. Start dragging near a corner, then add a second pinch at the opposite corner.
-   Check the upgrade. Try the same with the first pointer in the middle; it should
-   continue dragging until both corner conditions are met.
-3. Expand toward all frame edges, then shrink and cross the pointers. Check bounds,
-   the 40-pixel minimum width/height, and that the image never flips.
-4. Release one pinch or move a controlling hand out of view. Check the last geometry
-   remains and the other held pinch cannot immediately drag. Release both visible
-   hands before a new grab or resize.
-5. In LIVE mode, check current video at the resized location. Freeze with F or a
-   fist, then resize repeatedly with different width/height proportions. Check the
-   same saved image scales and can stretch, without capturing new content.
-6. Try F and a pending fist activation during resizing; neither should toggle.
-   Test R clearing, C recovery/rearming, and the existing exit/diagnostic controls.
-7. Repeat with `--no-tracking`; the plain camera preview should remain unchanged.
-
-For the recovery manual test, use the same run command above:
-
-1. With camera 0 selected, press C. Check the Reconnecting camera... status and
-   that terminal messages mention only index 0, with the usual backend fallback.
-2. If the preview is black, compare raw debug statistics before and after C. Let
-   it run for several seconds to see the bounded periodic logs. Do not assume
-   a successful reopen guarantees a visible image.
-3. During rectangle creation, press C. Check that the unfinished rectangle is
-   canceled, and held pinches cannot create another until both hands are OPEN.
-4. Place a rectangle and press C again. If dimensions are unchanged, it should
-   remain in place and resume in PLACED after both hands are OPEN. If dimensions
-   change, it should be cleared. The program does not request a size change.
-5. If a retry fails, restore Camo/iPad availability and press C again. Check that
-   the window allows retry or exit. Repeat Q, Escape, window close, and Ctrl+C
-   during recovery and after a failure in separate runs.
-6. Repeat with `--no-tracking --debug-camera`; reconnection should remain usable
-   without hand overlays, rectangle interaction, or model loading.
-
-For the frozen-content manual test, use:
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
-```
-
-1. Place a rectangle and press F. Check separate PLACED and FROZEN labels. Move
-   something in view: the crop stays still while the surrounding video stays live.
-2. Grab and drag the frozen rectangle. Check that the same image moves with it,
-   at the same size. Press F during dragging and confirm it has no effect.
-3. Move a hand behind the frozen image. Check that live landmarks and pinch/drag
-   interaction still follow it and appear above the frozen pixels.
-4. Drop the rectangle, press F to return to LIVE, then drag it. Check that its
-   content follows the camera image at the current location rather than carrying
-   a previously viewed crop. Press F again to capture new content there.
-5. Press R and check that rectangle and image disappear. Create again and check
-   the initial content mode is LIVE.
-6. Freeze again and press C. With unchanged dimensions, check that the same crop
-   returns after recovery and both-OPEN rearming; a dimension change must clear
-   both rectangle and image. Pressing F during recovery must do nothing.
-7. Check F with no rectangle and with `--no-tracking`, and repeat Q, Escape,
-   window closing, and Ctrl+C exit checks.
-
-For the fist manual test, use the same run command above:
-
-1. Place a rectangle, show one fully OPEN hand outside it, then hold a closed fist.
-   Check the hold progress and a single toggle after about 0.8 seconds.
-2. Keep holding. Check there are no repeated toggles. Try a neutral hand or a
-   released pinch; neither should rearm it. Fully open, then hold a fist again.
-3. Make a thumb/index pinch while extending the other fingers. Check it does not
-   activate the fist toggle. Try the fist palm center inside the rectangle as well.
-4. Interrupt a partial hold or move the hand out of view. Reintroduce it as a fist;
-   check it must be opened again before a new complete hold.
-5. Arm both hands and hold two fists. Check only one toggle occurs and both need
-   to open again. Press F near the end of a hold; check no immediate second toggle.
-6. Try a pinch grab as another hand's hold completes. Check dragging wins. Test
-   creation, dragging, R, and C; held fists must not activate until a full-open
-   observation is made again while PLACED.
-7. Repeat the existing frozen-image, inference, exit-control, recovery, diagnostic,
-   and `--no-tracking` checks. No camera behavior or dependency changes are needed.
-
-For the filter manual test, run:
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
-```
-
-1. Before creating a panel, select a filter with keys 1-4. Create the panel and
-   check that only its content is affected, with raw live video outside it.
-2. Try all four filters in LIVE mode. Check the active button and caption, and that
-   landmarks, borders, handles, pointers, and instructions remain above the effect.
-3. Release, then pinch a button. Hold the pinch and move across other buttons;
-   check it selects only once. Pinch outside the toolbar and move inside; nothing
-   should change until a release and a fresh pinch.
-4. Place the panel over the toolbar, then select a button. Check that it does not
-   start dragging/resizing or trigger a fist toggle. Release before manipulating.
-5. Freeze the panel, switch filters, drag, and resize it. Select ORIGINAL again;
-   check the same unfiltered captured content returns without accumulated effects.
-6. Try buttons/keys during creation, dragging, resizing, and C recovery. They should
-   be disabled; release again after returning to idle before gesture selection.
-7. Press R and recover with C. Check the chosen filter remains selected. Repeat exit
-   controls and `--no-tracking`; that mode should show only the plain camera image.
-
-Live filters and toolbar selection require your manual confirmation. Automated
-checks did not access the camera.
+Live testing remains manual. The 2D pose heuristics and spatial hand association
+can miss poses or confuse IDs with occlusion, edge-on hands, or fast crossings.
+Use good lighting and distinct, visible hands. Frozen width/height changes can
+stretch images. Rendering cost grows with panel area/filter complexity; live
+performance and camera recovery have not been tested by the automated checks.

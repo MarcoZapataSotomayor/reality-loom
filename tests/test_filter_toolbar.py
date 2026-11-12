@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 import unittest
 
-from filter_toolbar import FilterToolbar
+from filter_toolbar import DELETE_KEYS, FilterToolbar
 from filters import FILTER_NAMES
 
 
@@ -98,6 +98,22 @@ class FilterToolbarTests(unittest.TestCase):
             buttons = self.toolbar.buttons(width, HEIGHT)
             self.assertTrue(all(0 <= button.left < button.right < width for button in buttons))
             self.assertTrue(all(first.right < second.left for first, second in zip(buttons, buttons[1:])))
+
+    def test_new_delete_buttons_and_keys_share_fresh_pinch_consumption(self):
+        for index, action in enumerate(("NEW", "DELETE")):
+            with self.subTest(action=action):
+                self.toolbar = FilterToolbar()
+                button = self.toolbar.action_buttons(WIDTH, HEIGHT)[index]
+                point = ((button.left + button.right) / 2, (button.top + button.bottom) / 2)
+                self.update([hand(1, point)])
+                self.assertTrue(self.update([hand(1, point, True)]))
+                self.assertEqual(self.toolbar.action, action)
+                self.assertEqual(self.toolbar.panel_hands([hand(1, point, True)]), [])
+                self.assertFalse(self.update([hand(1, point, True)]))
+        for key in (ord("n"), ord("N"), *DELETE_KEYS):
+            self.assertTrue(self.update([], key=key))
+            self.assertEqual(self.toolbar.action, "NEW" if key in (ord("n"), ord("N")) else "DELETE")
+            self.assertFalse(self.update([], enabled=False, key=key))
 
 
 if __name__ == "__main__":

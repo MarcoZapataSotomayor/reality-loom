@@ -185,9 +185,18 @@ class FrozenPreviewTests(unittest.TestCase):
             stack.enter_context(redirect_stdout(StringIO()))
             arguments = ["main.py", "--camera", "0"]
             if tracking:
+                from panels import PanelCollection
+
+                collection = interaction if isinstance(interaction, PanelCollection) else PanelCollection(interaction)
+                if toolbar is not None and collection is not interaction:
+                    if collection.active_panel is not None:
+                        collection.active_panel.filter_name = toolbar.selected
+                    else:
+                        collection.default_filter = toolbar.selected
+                self.collection = collection
                 stack.enter_context(patch.dict(main.sys.modules, {"hand_tracking": fake_tracking}))
                 stack.enter_context(patch("gestures.PinchDetector", return_value=pinch))
-                stack.enter_context(patch("interaction.RectangleInteraction", return_value=interaction))
+                stack.enter_context(patch("panels.PanelCollection", return_value=collection))
                 if toolbar is not None:
                     stack.enter_context(patch("filter_toolbar.FilterToolbar", return_value=toolbar))
             else:
@@ -196,7 +205,7 @@ class FrozenPreviewTests(unittest.TestCase):
 
                 def guard(name, *args, **kwargs):
                     if name in ("hand_tracking", "gestures", "interaction", "freeze_control",
-                                "filter_toolbar", "filters", "mediapipe"):
+                                "filter_toolbar", "filters", "panels", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 
@@ -206,7 +215,7 @@ class FrozenPreviewTests(unittest.TestCase):
             stack.enter_context(patch.object(main, "CameraReconnect", side_effect=recover))
             stack.enter_context(patch.object(cv2, "namedWindow"))
             stack.enter_context(patch.object(cv2, "imshow", side_effect=lambda title, image: shown.append(image.copy())))
-            stack.enter_context(patch.object(cv2, "waitKey", side_effect=keys))
+            stack.enter_context(patch.object(cv2, "waitKeyEx", side_effect=keys))
             stack.enter_context(patch.object(cv2, "getWindowProperty", return_value=1))
             labels = stack.enter_context(patch.object(cv2, "putText", wraps=cv2.putText))
             destroy = stack.enter_context(patch.object(cv2, "destroyAllWindows"))
@@ -339,7 +348,7 @@ class FrozenPreviewTests(unittest.TestCase):
         self.assertEqual(interaction.state, "RESIZING")
         self.assertEqual(interaction.content_mode, "FROZEN")
         self.assertIs(interaction.frozen_image, original)
-        self.assertIn("Rectangle: RESIZING", labels)
+        self.assertTrue(any(label.startswith("Panels: 1/4") and "RESIZING" in label for label in labels))
         self.assertTrue(any(text.startswith("Content: FROZEN") for text in labels))
         # A filled handle extends into this pixel, beyond the thin border.
         np.testing.assert_array_equal(shown[0][122, 102], (0, 255, 255))
@@ -369,7 +378,7 @@ class FrozenPreviewTests(unittest.TestCase):
                          gesture_frames=gestures, toolbar=toolbar)
             toggle.assert_not_called()
         self.assertEqual(toolbar.selected, "GRAYSCALE")
-        self.assertEqual(interaction.state, "PLACED")
+        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
         self.assertEqual(interaction.rectangle, Rectangle(100, 380, 400, 470))
 
     def test_keyboard_filter_consumes_a_simultaneous_inside_grab(self):
@@ -384,7 +393,7 @@ class FrozenPreviewTests(unittest.TestCase):
         self.preview(interaction, [frame() for _ in gestures], [-1, ord("3"), ord("q")],
                      gesture_frames=gestures, toolbar=toolbar)
         self.assertEqual(toolbar.selected, "PIXELATE")
-        self.assertEqual(interaction.state, "PLACED")
+        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
 
     def test_toolbar_selection_cancels_pending_fist_and_keeps_live_raw_inference(self):
         from filter_toolbar import FilterToolbar
@@ -460,7 +469,7 @@ class FrozenPreviewTests(unittest.TestCase):
         self.preview(interaction, [frame(), frame(), frame()], [-1, -1, ord("q")],
                      gesture_frames=[released, pressed, pressed], toolbar=toolbar)
         self.assertEqual(toolbar.selected, "GRAYSCALE")
-        self.assertEqual(interaction.state, "READY")
+        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
         self.assertIsNone(interaction.rectangle)
 
     def test_freezing_with_an_effect_saves_raw_color_and_original_restores_it(self):
@@ -468,13 +477,17 @@ class FrozenPreviewTests(unittest.TestCase):
 
         interaction = placed_rectangle()
         toolbar = FilterToolbar()
-        images = [frame((20 + index, 80, 200)) for index in range(5)]
+        from test_fist_gesture import pose_hand
+
+        images = [frame((20 + index, 80, 200)) for index in range(7)]
+        released = [pose_hand("open", 1), pose_hand("open", 2)]
         inputs, shown, labels = self.preview(
-            interaction, images, [ord("2"), ord("F"), -1, ord("1"), ord("q")], toolbar=toolbar,
+            interaction, images, [ord("2"), -1, ord("F"), -1, ord("1"), -1, ord("q")],
+            gesture_frames=[released] * len(images), toolbar=toolbar,
         )
-        np.testing.assert_array_equal(interaction.frozen_image, images[1][120:280, 100:300])
-        self.assertEqual(len(set(int(value) for value in shown[2][140, 120])), 1)
-        np.testing.assert_array_equal(shown[3][140, 120], images[1][140, 120])
+        np.testing.assert_array_equal(interaction.frozen_image, images[2][120:280, 100:300])
+        self.assertEqual(len(set(int(value) for value in shown[3][140, 120])), 1)
+        np.testing.assert_array_equal(shown[5][140, 120], images[2][140, 120])
         for actual, expected in zip(inputs, images):
             np.testing.assert_array_equal(actual, expected)
         self.assertEqual(toolbar.selected, "ORIGINAL")

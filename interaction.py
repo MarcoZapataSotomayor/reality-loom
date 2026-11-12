@@ -118,23 +118,8 @@ class RectangleInteraction:
 
     def composite_panel(self, raw_frame, display_frame, filter_name="ORIGINAL"):
         """Render a fresh effect from live raw pixels or the untouched original crop."""
-        if self.rectangle is None:
-            return
-        left, top = round(self.rectangle.left), round(self.rectangle.top)
-        width, height = self.rectangle.pixel_size()
-        frame_height, frame_width = display_frame.shape[:2]
-        if (width < 1 or height < 1 or left < 0 or top < 0 or left + width > frame_width
-                or top + height > frame_height):
+        if not composite_panel_pixels(self.rectangle, self.frozen_image, raw_frame, display_frame, filter_name):
             self.reset()
-            return
-        source = self.frozen_image
-        if source is None:
-            if raw_frame is None:
-                return
-            source = raw_frame[top:top + height, left:left + width]
-        from filters import apply_filter
-
-        display_frame[top:top + height, left:left + width] = apply_filter(source, filter_name, (width, height))
 
     def reset(self):
         """Clear geometry and block creation until both hands are seen released."""
@@ -204,12 +189,7 @@ class RectangleInteraction:
             ]
             if candidates:
                 controller = min(candidates, key=lambda hand: hand.track_id)
-                self._drag_hand_id = controller.track_id
-                self._grab_offset = (controller.pinch_point[0] - self.rectangle.left,
-                                     controller.pinch_point[1] - self.rectangle.top)
-                # Reset smoothing at every grab; starting a drag must not move it.
-                self._drag_position = (self.rectangle.left, self.rectangle.top)
-                self.state = "DRAGGING"
+                self.begin_drag(controller)
             return
 
         if self.state == "WAITING_FOR_RELEASE":
@@ -253,6 +233,22 @@ class RectangleInteraction:
                 previous[1] + POSITION_SMOOTHING * (target[1] - previous[1]),
             )
         self._update_rectangle(frame_width, frame_height)
+
+    @property
+    def can_start_manipulation(self):
+        return self.state == "PLACED" and not self._grab_release_required
+
+    def begin_drag(self, hand):
+        """Start a validated grab; the collection can select a panel first."""
+        self._drag_hand_id = hand.track_id
+        self._grab_offset = (hand.pinch_point[0] - self.rectangle.left,
+                             hand.pinch_point[1] - self.rectangle.top)
+        self._drag_position = (self.rectangle.left, self.rectangle.top)
+        self.state = "DRAGGING"
+
+    def try_resize(self, hands):
+        """Give the active panel's handles priority before collection selection."""
+        return self.can_start_manipulation and self._try_start_resize(hands)
 
     def _update_rectangle(self, frame_width, frame_height):
         first, second = (self._corners[track_id] for track_id in self._active_ids)
@@ -366,3 +362,24 @@ class RectangleInteraction:
             old.right + RESIZE_SMOOTHING * (right - old.right),
             old.bottom + RESIZE_SMOOTHING * (bottom - old.bottom),
         )
+
+
+def composite_panel_pixels(rectangle, frozen_image, raw_frame, display_frame, filter_name="ORIGINAL"):
+    """Render panel data without a gesture controller or sampling other panels."""
+    if rectangle is None:
+        return True
+    left, top = round(rectangle.left), round(rectangle.top)
+    width, height = rectangle.pixel_size()
+    frame_height, frame_width = display_frame.shape[:2]
+    if (width < 1 or height < 1 or left < 0 or top < 0
+            or left + width > frame_width or top + height > frame_height):
+        return False
+    source = frozen_image
+    if source is None:
+        if raw_frame is None:
+            return True
+        source = raw_frame[top:top + height, left:left + width]
+    from filters import apply_filter
+
+    display_frame[top:top + height, left:left + width] = apply_filter(source, filter_name, (width, height))
+    return True

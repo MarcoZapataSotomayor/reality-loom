@@ -121,7 +121,7 @@ class CameraPreviewRecoveryTests(unittest.TestCase):
             recovery = stack.enter_context(patch.object(main, "CameraReconnect", side_effect=recovery_factory))
             stack.enter_context(patch.object(cv2, "namedWindow"))
             stack.enter_context(patch.object(cv2, "imshow"))
-            stack.enter_context(patch.object(cv2, "waitKey", side_effect=keys))
+            stack.enter_context(patch.object(cv2, "waitKeyEx", side_effect=keys))
             if isinstance(visible, list):
                 stack.enter_context(patch.object(cv2, "getWindowProperty", side_effect=visible))
             else:
@@ -222,7 +222,7 @@ class CameraPreviewRecoveryTests(unittest.TestCase):
 
         with patch.dict(main.sys.modules, {"hand_tracking": tracking_module}), \
                 patch("gestures.PinchDetector", return_value=pinch), \
-                patch("interaction.RectangleInteraction", return_value=interaction), \
+                patch("panels.PanelCollection", return_value=interaction), \
                 patch.object(main, "draw_rectangle_interaction"):
             self.preview([ord("c"), -1, ord("q")], recover,
                          MagicMock(side_effect=[(old, first_frame), (new, recovered_frame)]),

@@ -95,7 +95,15 @@ def draw_camera_status(frame, message, instructions):
 
 
 def draw_rectangle_interaction(frame, interaction):
-    """Render the rectangle and instructions only on the display copy."""
+    """Draw every border, but only the active panel's handles, above composites."""
+    for panel in interaction.panels:
+        box = panel.rectangle
+        active_panel = panel.panel_id == interaction.active_id and not interaction.creation_mode
+        color = (255, 200, 0) if active_panel else (170, 170, 170)
+        cv2.rectangle(frame, (round(box.left), round(box.top)),
+                      (round(box.right), round(box.bottom)), color, 1, cv2.LINE_AA)
+        cv2.putText(frame, f"#{panel.panel_id}", (round(box.left) + 7, round(box.top) + 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
     rectangle = interaction.rectangle
     if rectangle is not None:
         color = (0, 255, 255) if interaction.state in ("CREATING", "RESIZING") else (255, 200, 0)
@@ -109,16 +117,21 @@ def draw_rectangle_interaction(frame, interaction):
             for point in rectangle.corner_points().values():
                 cv2.circle(frame, (round(point[0]), round(point[1])),
                            CORNER_HANDLE_RADIUS_PIXELS, color, -1, cv2.LINE_AA)
-    lines = [f"Rectangle: {interaction.state.replace('_', ' ')}"]
+    lines = [interaction.status_text]
     if rectangle is not None:
         lines.append(f"Content: {interaction.content_mode} | F: toggle when placed")
     lines.append(interaction.instructions)
+    height, width = frame.shape[:2]
+    start_y, line_height = (60, 24) if height >= 360 else (50, 16)
     for row, text in enumerate(lines):
-        position = (12, 60 + row * 24)
+        position = (12, start_y + row * line_height)
+        base_scale = 0.55 if width >= 640 else 0.35
+        text_width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, base_scale, 1)[0][0]
+        scale = base_scale * min(1.0, (width - 24) / max(1, text_width))
         cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55, (0, 0, 0), 4, cv2.LINE_AA)
+                    scale, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55, (255, 255, 255), 1, cv2.LINE_AA)
+                    scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def draw_fist_feedback(frame, message):
@@ -159,14 +172,14 @@ def main():
             # Import only when requested so camera-only mode never loads MediaPipe.
             from hand_tracking import HandTracker, draw_hand_landmarks
             from gestures import PinchDetector
-            from interaction import RectangleInteraction
+            from panels import PanelCollection
             from freeze_control import FreezeController
             from filter_toolbar import FilterToolbar
 
             # Check the model before opening the camera.
             tracker = HandTracker()
             pinch_detector = PinchDetector()
-            interaction = RectangleInteraction()
+            interaction = PanelCollection()
             freeze_control = FreezeController()
             toolbar = FilterToolbar()
         camera, frame = open_camera(args.camera)
@@ -178,9 +191,9 @@ def main():
             return 1
 
         cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
-        print("Press C to reconnect this camera. Press Q or Escape, or close the window, to exit.")
+        print("C: reconnect | Q: exit | Escape: cancel new panel, or exit outside creation.")
         if tracker is not None:
-            print("Pinch both hands to create a rectangle. Press R to clear it.")
+            print("Pinch both hands to create. N: New panel | Delete: active panel | R: clear ALL panels")
             print("Press F while placed to toggle LIVE / FROZEN content.")
             print("Or open a hand fully, then hold a fist outside the placed rectangle for 0.8 s.")
             print("Select a panel filter with the toolbar or keys 1-4 while idle / placed.")
@@ -205,10 +218,17 @@ def main():
 
             # Read keyboard input before gesture arbitration so keys 1-4 have the
             # same priority as toolbar pinches, ahead of drag/resize starts.
-            key = cv2.waitKey(30 if not active else 1) & 0xFF
+            key = cv2.waitKeyEx(30 if not active else 1)
+            escape_canceled = False
             if tracker is not None:
+                if key == 27 and active:
+                    escape_canceled = interaction.cancel_creation()
+                    if escape_canceled:
+                        freeze_control.reset()
+                        toolbar.disable()
+                toolbar.selected = interaction.selected_filter
                 control_key = key in (ord("q"), ord("Q"), 27, ord("r"), ord("R"), ord("c"), ord("C"))
-                can_select = active and not control_key and interaction.state in ("READY", "PLACED")
+                can_select = active and not control_key and interaction.toolbar_enabled
                 selection_consumed = toolbar.update(
                     hand_gestures, frame.shape[1], frame.shape[0], can_select, key,
                 )
@@ -223,25 +243,31 @@ def main():
             else:
                 if tracker is not None:
                     if selection_consumed:
+                        interaction.apply_action(toolbar.action)
                         interaction.observe_pinches(hand_gestures)
                         freeze_control.reset()
+                    elif escape_canceled:
+                        interaction.observe_pinches(hand_gestures)
                     else:
                         panel_hands = toolbar.panel_hands(hand_gestures)
                         interaction.update(panel_hands, frame.shape[1], frame.shape[0])
                         freeze_control.update(panel_hands, interaction)
-                    if interaction.state not in ("READY", "PLACED"):
+                    if not interaction.toolbar_enabled:
                         toolbar.disable()
-                    interaction.composite_panel(frame, preview_frame, toolbar.selected)
+                    interaction.composite(frame, preview_frame)
                     # Draw every overlay above the composite, never into the raw frame.
                     draw_hand_landmarks(preview_frame, result, hand_gestures)
                     draw_rectangle_interaction(preview_frame, interaction)
                     if interaction.rectangle is not None:
                         draw_fist_feedback(preview_frame, freeze_control.message)
             if tracker is not None:
+                toolbar.selected = interaction.selected_filter
                 toolbar.draw(preview_frame, hand_gestures,
-                             active and interaction.state in ("READY", "PLACED"))
+                             active and interaction.toolbar_enabled,
+                             interaction.can_new, interaction.can_delete,
+                             "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}")
             cv2.imshow(WINDOW_TITLE, preview_frame)
-            if key in (ord("q"), ord("Q"), 27):
+            if key in (ord("q"), ord("Q")) or (key == 27 and not escape_canceled):
                 break
             if tracker is not None and key in (ord("r"), ord("R")):
                 interaction.reset()
@@ -290,7 +316,7 @@ def main():
             if camera_error is not None:
                 continue
 
-            if tracker is not None and not selection_consumed:
+            if tracker is not None and not selection_consumed and not escape_canceled:
                 # Keyboard and fist requests share one raw-image action. C/R and
                 # exit checks above cancel pending requests before this point.
                 freeze_control.apply(interaction, frame, keyboard=key in (ord("f"), ord("F")))
