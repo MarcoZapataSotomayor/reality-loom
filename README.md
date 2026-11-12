@@ -5,7 +5,8 @@ Landmarker. It detects up to two hands, draws their 21 landmarks and connections
 and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN`,
 `PINCH`, `FIST`, or `NEUTRAL` label. Pinch with both hands to create one rectangle, then release either
 hand to place it. A fresh one-hand pinch inside the placed rectangle lets you drag
-it without resizing. Press F, or deliberately hold a fist outside the placed
+it without resizing; two pinches at opposite corner handles resize it. Press F,
+or deliberately hold a fist outside the placed
 rectangle, to freeze/unfreeze its image content in memory. Video outside it
 remains live. It does not save images or video.
 
@@ -141,8 +142,9 @@ The preview shows the current rectangle state and a short instruction:
 3. Release either pinch while both hands are still tracked. The last preview is
    kept as **PLACED** if its width and height are each at least 40 pixels.
    A smaller rectangle is discarded.
-4. A placed rectangle stays fixed until a fresh one-hand grab inside it. Use the
-   drag controls below to move it, or press **R** to clear it. Two-hand creation
+4. A placed rectangle stays fixed until a fresh one-hand grab inside it or two
+   pinches at opposite corner handles. Use the drag/resize controls below, or
+   press **R** to clear it. Two-hand creation
    is available only when no rectangle exists.
 5. After R, a discarded small rectangle, or tracking loss during creation, the
    state is **WAITING FOR RELEASE**. Show two visible OPEN hands to return to
@@ -152,14 +154,18 @@ During creation, losing either original track ID or seeing a replacement ID
 cancels the unfinished rectangle instead of placing it. The existing spatial
 hand matching still has limits when hands overlap or cross quickly.
 
-`interaction.py` contains the rectangle geometry and state, without OpenCV or
-MediaPipe dependencies. Named settings near the top are:
+`interaction.py` contains rectangle geometry and state without camera or MediaPipe
+dependencies. Only frozen-image scaling imports the already installed OpenCV
+package. Named settings near the top are:
 
 - `MIN_RECTANGLE_SIZE_PIXELS = 40.0`: minimum width **and** height for placement.
 - `POSITION_SMOOTHING = 0.35`: how much each new corner position contributes per
   frame; smaller values reduce jitter but add lag, and `1.0` disables smoothing.
 - `DRAG_SMOOTHING = 0.35`: position smoothing while dragging a placed rectangle.
   It starts fresh at each grab and does not change the width or height.
+- `RESIZE_HIT_RADIUS_PIXELS = 28.0`: maximum distance from each pinch midpoint to
+  its corner handle when starting or upgrading to a resize.
+- `RESIZE_SMOOTHING = 0.35`: how much new corner positions contribute while resizing.
 
 Smoothing follows each track ID before the corners are sorted. The release frame
 does not move the rectangle because opening fingers can shift the midpoint.
@@ -179,8 +185,10 @@ All rendering uses the display copy; raw camera frames remain untouched.
    Pinching outside and moving inside cannot start a drag. A hand appearing
    already pinched also cannot grab until it has been observed OPEN first.
 
-Only one hand controls a drag. Other hands and MediaPipe result reordering do
-not change ownership. If both hands make eligible grabs in the same frame, the
+Only one hand controls a drag. Result reordering does not change ownership.
+The second hand can upgrade it to resizing only when both pointers satisfy the
+opposite-corner conditions below. If both hands make eligible inside grabs away
+from those handles in the same frame, the
 lowest track ID wins. This rule is deterministic and does not depend on which
 result appears first.
 
@@ -200,12 +208,50 @@ If a normal frame-size change leaves room for the placed rectangle, it is moved
 inside the new bounds without resizing. If its fixed size cannot fit, it is
 cleared safely and both hands must be OPEN before creating again.
 
+## Resize with opposite corner handles
+
+Small corner handles appear on a placed rectangle and stay visible during dragging
+and resizing. Use either diagonal: top-left/bottom-right or top-right/bottom-left.
+
+1. Pinch with both hands, with each thumb/index midpoint within 28 pixels of one
+   of the diagonally opposite handles. The state becomes **RESIZING**, separately
+   from the LIVE/FROZEN content mode. Resize matching has priority over dragging.
+2. You can also start with a one-hand drag near a corner, then pinch the opposite
+   corner with the other hand. Both pointers must be near their opposite handles
+   on the upgrade frame. A drag elsewhere inside the rectangle stays a drag.
+3. Corner-to-pointer offsets are retained so entering RESIZING does not jump.
+   Each track ID keeps its corner role until release, even when results reorder.
+4. Keep both pinches held to resize. Light smoothing reduces jitter. Coordinates
+   stay inside the frame, and width and height each stay at least 40 pixels.
+5. If pointers cross, corner roles do not swap: the rectangle stops shrinking at
+   the minimum size rather than flipping its image. Width and height can change
+   independently; there is no aspect-ratio lock.
+6. Release either pinch, or lose a controlling track, to finish at the last valid
+   geometry. Replacement tracks do not take over. The state becomes WAITING FOR
+   RELEASE; show two visible hands with both pinches released before another
+   manipulation. A held remaining pinch cannot fall directly into dragging.
+
+Resize activation uses the current two pinches and their proximity to handles;
+unlike a one-hand grab, it does not require a fresh transition on that exact frame.
+The release gate after finishing still prevents held pinches from restarting it.
+R clears the rectangle. C cancels resizing and applies the existing recovery and
+both-release rules, retaining geometry/content only when frame dimensions match.
+
+In LIVE mode, the resized rectangle shows current camera pixels at its current
+location. In FROZEN mode, each rendered size is generated from the **original
+saved crop**, never from a previously resized result. The saved crop is not
+recaptured or modified. Independent width/height changes can **stretch the frozen
+image**. Returning to the original pixel dimensions displays the original pixels.
+Dragging afterward transports the current sized content without further changes
+to rectangle dimensions. F is ignored during resizing, and fist holds are canceled
+and require a new full-open observation after returning to PLACED.
+
 ## Toggle LIVE and FROZEN content
 
 Press **F** while the rectangle is **PLACED** to switch its content from **LIVE**
 to **FROZEN**, or back again. Content mode is shown on a separate line from the
-PLACED/DRAGGING interaction state. F is ignored when there is no placed rectangle,
-while dragging, during camera recovery/rearming, or while capture is paused with
+PLACED/DRAGGING/RESIZING interaction state. F is ignored when there is no placed rectangle,
+while dragging or resizing, during camera recovery/rearming, or while capture is paused with
 an error. It is also ignored in `--no-tracking` mode.
 
 - **LIVE:** the rectangle shows the current camera image at its current location.
@@ -213,7 +259,8 @@ an error. It is also ignored in `--no-tracking` mode.
 - **FROZEN:** F copies the current rectangle region from the raw BGR camera frame,
   before any overlays are applied to those pixels. This independent crop is the
   only retained image. Nothing is saved to disk and no temporal history is kept.
-  Dragging carries that exact image, without recapturing or resizing it.
+  Dragging carries the saved content; two-hand resizing scales from its original
+  pixels to the current geometry. Neither action recaptures the image.
 
 The rest of the preview stays live in either mode. Hand inference always uses
 the live raw camera image, even when frozen content visually covers a hand.
@@ -223,7 +270,7 @@ become part of the captured image.
 
 Press F again after dropping a frozen rectangle to return to LIVE and release
 the stored crop. A later F captures new raw content at the rectangle's current
-position. **R** clears both geometry and the image. **C** cancels dragging and
+position. **R** clears both geometry and the image. **C** cancels dragging/resizing and
 preserves frozen content only if its rectangle survives recovery with unchanged
 frame dimensions. Changed dimensions or any other rectangle reset clear both.
 Failed reconnect attempts retain the provisional rectangle and crop, and both
@@ -252,9 +299,9 @@ its next activation. F remains available without the gesture, but using it cance
 and disarms pending fist holds. If F and a fist qualify in the same frame, there
 is only one toggle.
 
-Creation, dragging, recovery, and rearming disable fist activation and require a
-full-open observation after returning to PLACED. A valid pinch grab is processed
-first and wins over a fist activation in the same frame. R and C clear pending
+Creation, dragging, resizing, recovery, and rearming disable fist activation and require a
+full-open observation after returning to PLACED. A valid resize is processed first,
+then a valid pinch grab; either wins over a fist activation in the same frame. R and C clear pending
 holds and rearm state. Pinching itself never requests a content toggle; it keeps
 its existing creation/dragging role. `--no-tracking` loads no gesture logic.
 
@@ -374,7 +421,7 @@ it is not a confirmed fix for the black-frame regression.
 - With tracking enabled, press **R** to clear or cancel the rectangle. Show both
   hands OPEN before starting another rectangle.
 - Press **F** while PLACED to toggle LIVE/FROZEN content. Drop a dragged rectangle
-  before toggling. No images are written to disk.
+  or finish resizing before toggling. No images are written to disk.
 - Or fully open a hand, then hold a closed fist outside the PLACED rectangle for
   0.8 seconds. Fully open that hand again before another activation.
 
@@ -417,6 +464,11 @@ and replacement hands. Dragging tests cover fresh grab transitions, outside
 pinches, offsets, fixed dimensions, smoothing resets, bounds, release, hand loss,
 ownership, simultaneous grabs, and R/C resets. The camera-only mode remains
 independent of interaction.
+
+Resize tests cover both diagonals, handle hit radius, priority over grabbing/fists,
+drag-to-resize upgrades, offsets without jumps, smoothing, bound/minimum clamps,
+fixed roles when pointers cross or results reorder, release/loss rearming, R/C,
+LIVE pixels, and scaling repeatedly from the original frozen crop.
 
 Frozen-content tests use synthetic BGR images and mocked camera/window calls.
 They cover independent copies, raw pixels without overlays, LIVE/FROZEN toggling,
@@ -509,8 +561,28 @@ For the dragging manual test, use the same run command above:
 6. During a drag, press R and check clearing/rearming. Place another rectangle,
    drag it, and press C. Check recovery preservation and that both hands must be
    OPEN before any fresh grab.
-7. Confirm two-hand creation cannot resize or replace a placed rectangle, and
+7. Away from opposite corner handles, confirm two-hand creation cannot replace
+   a placed rectangle, and
    verify Q, Escape, window closing, Ctrl+C, and `--no-tracking` still work.
+
+For the resizing manual test, use the same run command above:
+
+1. Place a rectangle and check four small corner handles. Pinch near opposite
+   handles on either diagonal; check RESIZING and no jump when it begins.
+2. Start dragging near a corner, then add a second pinch at the opposite corner.
+   Check the upgrade. Try the same with the first pointer in the middle; it should
+   continue dragging until both corner conditions are met.
+3. Expand toward all frame edges, then shrink and cross the pointers. Check bounds,
+   the 40-pixel minimum width/height, and that the image never flips.
+4. Release one pinch or move a controlling hand out of view. Check the last geometry
+   remains and the other held pinch cannot immediately drag. Release both visible
+   hands before a new grab or resize.
+5. In LIVE mode, check current video at the resized location. Freeze with F or a
+   fist, then resize repeatedly with different width/height proportions. Check the
+   same saved image scales and can stretch, without capturing new content.
+6. Try F and a pending fist activation during resizing; neither should toggle.
+   Test R clearing, C recovery/rearming, and the existing exit/diagnostic controls.
+7. Repeat with `--no-tracking`; the plain camera preview should remain unchanged.
 
 For the recovery manual test, use the same run command above:
 
@@ -571,5 +643,5 @@ For the fist manual test, use the same run command above:
 7. Repeat the existing frozen-image, inference, exit-control, recovery, diagnostic,
    and `--no-tracking` checks. No camera behavior or dependency changes are needed.
 
-Live fist recognition and its interaction with frozen content require your
-manual confirmation. Automated checks did not access the camera.
+Live resizing and its interaction with dragging, frozen content, and fist control
+require your manual confirmation. Automated checks did not access the camera.

@@ -323,6 +323,30 @@ class FrozenPreviewTests(unittest.TestCase):
         self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
         job.close.assert_called_once()
 
+    def test_resize_preview_keeps_live_inference_and_ignores_f_with_handles_above_content(self):
+        interaction = placed_rectangle()
+        first, second = frame(), frame((60, 70, 80))
+        interaction.toggle_frozen(first)
+        original = interaction.frozen_image
+        gestures = [[hand(1, (100, 120), True), hand(2, (300, 280), True)],
+                    [hand(1, (80, 100), True), hand(2, (400, 350), True)]]
+        inputs, shown, labels = self.preview(
+            interaction, [first, second], [ord("F"), ord("q")], gesture_frames=gestures,
+        )
+        self.assertEqual(interaction.state, "RESIZING")
+        self.assertEqual(interaction.content_mode, "FROZEN")
+        self.assertIs(interaction.frozen_image, original)
+        self.assertIn("Rectangle: RESIZING", labels)
+        self.assertTrue(any(text.startswith("Content: FROZEN") for text in labels))
+        # A filled handle extends into this pixel, beyond the thin border.
+        np.testing.assert_array_equal(shown[0][122, 102], (0, 255, 255))
+        np.testing.assert_array_equal(original, first[120:280, 100:300])
+        np.testing.assert_array_equal(inputs[1], second)
+        left, top = round(interaction.rectangle.left), round(interaction.rectangle.top)
+        expected = cv2.resize(original, interaction.rectangle.pixel_size())
+        np.testing.assert_array_equal(shown[1][top + 20, left + 20], expected[20, 20])
+        np.testing.assert_array_equal(shown[1][400, 450], second[400, 450])
+
 
 if __name__ == "__main__":
     unittest.main()

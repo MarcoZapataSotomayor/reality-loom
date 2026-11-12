@@ -29,7 +29,7 @@ class FreezeController:
         return self.fists.message
 
     def update(self, hands, interaction, now=None):
-        """Call after interaction.update so a valid drag-start wins this frame."""
+        """Call after interaction.update so resizing or a drag wins this frame."""
         self._now = time.monotonic() if now is None else now
         self._applied = False
         enabled = interaction.state == "PLACED" and interaction.rectangle is not None

@@ -1,11 +1,15 @@
 """State and pixel geometry for one gesture-controlled rectangle."""
 
 from dataclasses import dataclass
+from math import dist
 
 
 MIN_RECTANGLE_SIZE_PIXELS = 40.0
 POSITION_SMOOTHING = 0.35  # 1.0 follows each new position without smoothing.
 DRAG_SMOOTHING = 0.35  # Smooth position only; the placed size never changes.
+RESIZE_SMOOTHING = 0.35
+RESIZE_HIT_RADIUS_PIXELS = 28.0
+DIAGONAL_CORNERS = (("top_left", "bottom_right"), ("top_right", "bottom_left"))
 
 
 def clamp_point(point, frame_width, frame_height):
@@ -48,6 +52,14 @@ class Rectangle:
     def contains(self, point):
         return self.left <= point[0] <= self.right and self.top <= point[1] <= self.bottom
 
+    def corner_points(self):
+        return {"top_left": (self.left, self.top), "top_right": (self.right, self.top),
+                "bottom_left": (self.left, self.bottom), "bottom_right": (self.right, self.bottom)}
+
+    def pixel_size(self):
+        # Ignore tiny floating-point drift from translation before choosing pixels.
+        return round(round(self.width, 6)), round(round(self.height, 6))
+
     def moved_to(self, left, top, frame_width, frame_height):
         """Translate a rectangle that fits in the frame without changing its size."""
         left = max(0.0, min(frame_width - 1.0 - self.width, left))
@@ -56,7 +68,7 @@ class Rectangle:
 
 
 class RectangleInteraction:
-    """Create with two pinches and move the placed rectangle with one fresh grab."""
+    """Create, drag, and resize one rectangle using tracked pinch pointers."""
 
     def __init__(self):
         self.reset()
@@ -69,8 +81,9 @@ class RectangleInteraction:
         return {
             "READY": "Pinch both hands to create a rectangle.",
             "CREATING": "Move both pinched hands; release either to place.",
-            "PLACED": "Pinch inside to drag. R: clear.",
-            "DRAGGING": "Move pinched hand; release to drop. R: clear.",
+            "PLACED": "Pinch: drag | Opposite corners: resize | R: clear",
+            "DRAGGING": "Release to drop; two corner pinches resize.",
+            "RESIZING": "Move both corner pinches; release either to finish.",
             "WAITING_FOR_RELEASE": "Show both hands OPEN to rearm.",
         }[self.state]
 
@@ -90,7 +103,7 @@ class RectangleInteraction:
         left, top = round(box.left), round(box.top)
         # Round the size once, independently of position, so fractional dragging
         # cannot change the captured image's pixel dimensions.
-        width, height = round(box.width), round(box.height)
+        width, height = box.pixel_size()
         frame_height, frame_width = raw_frame.shape[:2]
         if (width < 1 or height < 1 or left < 0 or top < 0
                 or left + width > frame_width or top + height > frame_height):
@@ -99,17 +112,23 @@ class RectangleInteraction:
         return True
 
     def composite_frozen(self, display_frame):
-        """Paste the same frozen pixels on a display copy, without resizing."""
+        """Render from the original crop, scaling only for the current geometry."""
         if self.rectangle is None or self.frozen_image is None:
             return
         left, top = round(self.rectangle.left), round(self.rectangle.top)
-        height, width = self.frozen_image.shape[:2]
+        width, height = self.rectangle.pixel_size()
         frame_height, frame_width = display_frame.shape[:2]
-        if (left < 0 or top < 0 or left + width > frame_width
+        if (width < 1 or height < 1 or left < 0 or top < 0 or left + width > frame_width
                 or top + height > frame_height):
-            self.reset()  # Clear both if the fixed-size content no longer fits.
+            self.reset()
             return
-        display_frame[top:top + height, left:left + width] = self.frozen_image
+        image = self.frozen_image
+        if image.shape[:2] != (height, width):
+            # Only image rendering needs the already installed OpenCV package.
+            import cv2
+
+            image = cv2.resize(self.frozen_image, (width, height), interpolation=cv2.INTER_LINEAR)
+        display_frame[top:top + height, left:left + width] = image
 
     def reset(self):
         """Clear geometry and block creation until both hands are seen released."""
@@ -122,12 +141,18 @@ class RectangleInteraction:
         self._grab_offset = None
         self._drag_position = None
         self._grab_release_required = False
+        self._resize_hands = {}
         self.state = "WAITING_FOR_RELEASE"
 
     def prepare_camera_reconnect(self):
         """Cancel unfinished work, retaining only a placed rectangle provisionally."""
-        placed = self.rectangle if self.state in ("PLACED", "DRAGGING", "WAITING_FOR_RELEASE") else None
-        frozen = self.frozen_image if placed is not None else None
+        if self.state in ("PLACED", "DRAGGING", "RESIZING", "WAITING_FOR_RELEASE"):
+            self._wait_for_both_releases()
+        else:
+            self.reset()
+
+    def _wait_for_both_releases(self):
+        placed, frozen = self.rectangle, self.frozen_image
         self.reset()
         self.rectangle = placed
         self.frozen_image = frozen
@@ -143,6 +168,10 @@ class RectangleInteraction:
         # Forget missing IDs. A new/reappearing pinched hand has no OPEN history.
         self._pinch_states = {hand.track_id: hand.is_pinching for hand in hands}
 
+        if self.state == "RESIZING":
+            self._update_resize(hands, frame_width, frame_height)
+            return
+
         if self.state == "DRAGGING":
             self._update_drag(hands, frame_width, frame_height)
             return
@@ -153,6 +182,9 @@ class RectangleInteraction:
             if self._grab_release_required:
                 if hands and all(not hand.is_pinching for hand in hands):
                     self._grab_release_required = False
+                return
+
+            if self._try_start_resize(hands):
                 return
 
             candidates = [
@@ -244,6 +276,10 @@ class RectangleInteraction:
         if not self._keep_placed_in_bounds(frame_width, frame_height):
             return
 
+        # Upgrade before applying drag movement, preserving the displayed box.
+        if self._try_start_resize(hands):
+            return
+
         target = self.rectangle.moved_to(
             controller.pinch_point[0] - self._grab_offset[0],
             controller.pinch_point[1] - self._grab_offset[1],
@@ -253,3 +289,70 @@ class RectangleInteraction:
         top = self._drag_position[1] + DRAG_SMOOTHING * (target.top - self._drag_position[1])
         self.rectangle = self.rectangle.moved_to(left, top, frame_width, frame_height)
         self._drag_position = (self.rectangle.left, self.rectangle.top)
+
+    def _try_start_resize(self, hands):
+        if len(hands) != 2 or not all(hand.is_pinching for hand in hands):
+            return False
+        first, second = sorted(hands, key=lambda hand: hand.track_id)
+        if first.track_id == second.track_id:
+            return False
+        corners = self.rectangle.corner_points()
+        best = None
+        best_distance = float("inf")
+        for first_role, second_role in DIAGONAL_CORNERS:
+            for roles in ((first_role, second_role), (second_role, first_role)):
+                distances = [dist(hand.pinch_point, corners[role])
+                             for hand, role in zip((first, second), roles)]
+                if max(distances) <= RESIZE_HIT_RADIUS_PIXELS and sum(distances) < best_distance:
+                    best_distance = sum(distances)
+                    best = roles
+        if best is None:
+            return False
+
+        self._resize_hands = {}
+        for hand, role in zip((first, second), best):
+            corner = corners[role]
+            offset = (corner[0] - hand.pinch_point[0], corner[1] - hand.pinch_point[1])
+            self._resize_hands[hand.track_id] = (role, offset)
+        self._drag_hand_id = None
+        self._grab_offset = None
+        self._drag_position = None
+        self.state = "RESIZING"
+        return True
+
+    @staticmethod
+    def _resize_axis(first, second, limit):
+        first, second = max(0.0, min(limit, first)), max(0.0, min(limit, second))
+        if second - first < MIN_RECTANGLE_SIZE_PIXELS:
+            # Roles stay fixed when pointers cross: stop at minimum size, never flip.
+            half = MIN_RECTANGLE_SIZE_PIXELS / 2
+            center = max(half, min(limit - half, (first + second) / 2))
+            first, second = center - half, center + half
+        return first, second
+
+    def _update_resize(self, hands, frame_width, frame_height):
+        by_id = {hand.track_id: hand for hand in hands}
+        if (not self._resize_hands.keys() <= by_id.keys()
+                or not all(by_id[track_id].is_pinching for track_id in self._resize_hands)):
+            # Keep the last valid box/image and require both hands released. No
+            # direct fallback to dragging, even if one pinch is still held.
+            self._wait_for_both_releases()
+            return
+        if not self._keep_placed_in_bounds(frame_width, frame_height):
+            return
+
+        edges = {}
+        for track_id, (role, offset) in self._resize_hands.items():
+            point = by_id[track_id].pinch_point
+            vertical, horizontal = role.split("_")
+            edges[horizontal] = point[0] + offset[0]
+            edges[vertical] = point[1] + offset[1]
+        left, right = self._resize_axis(edges["left"], edges["right"], frame_width - 1)
+        top, bottom = self._resize_axis(edges["top"], edges["bottom"], frame_height - 1)
+        old = self.rectangle
+        self.rectangle = Rectangle(
+            old.left + RESIZE_SMOOTHING * (left - old.left),
+            old.top + RESIZE_SMOOTHING * (top - old.top),
+            old.right + RESIZE_SMOOTHING * (right - old.right),
+            old.bottom + RESIZE_SMOOTHING * (bottom - old.bottom),
+        )

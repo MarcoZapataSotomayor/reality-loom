@@ -12,6 +12,7 @@ from camera_recovery import CameraReconnect
 WINDOW_TITLE = "Reality Loom"
 DEBUG_FRAME_LIMIT = 5
 DEBUG_LOG_INTERVAL_SECONDS = 2.0
+CORNER_HANDLE_RADIUS_PIXELS = 4
 
 
 def open_camera(camera_index):
@@ -97,13 +98,17 @@ def draw_rectangle_interaction(frame, interaction):
     """Render the rectangle and instructions only on the display copy."""
     rectangle = interaction.rectangle
     if rectangle is not None:
-        color = (0, 255, 255) if interaction.state == "CREATING" else (255, 200, 0)
+        color = (0, 255, 255) if interaction.state in ("CREATING", "RESIZING") else (255, 200, 0)
         cv2.rectangle(
             frame,
             (round(rectangle.left), round(rectangle.top)),
             (round(rectangle.right), round(rectangle.bottom)),
             color, 2, cv2.LINE_AA,
         )
+        if interaction.state in ("PLACED", "DRAGGING", "RESIZING"):
+            for point in rectangle.corner_points().values():
+                cv2.circle(frame, (round(point[0]), round(point[1])),
+                           CORNER_HANDLE_RADIUS_PIXELS, color, -1, cv2.LINE_AA)
     lines = [f"Rectangle: {interaction.state.replace('_', ' ')}"]
     if rectangle is not None:
         lines.append(f"Content: {interaction.content_mode} | F: toggle when placed")
