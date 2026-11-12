@@ -74,9 +74,47 @@ class RectangleInteraction:
             "WAITING_FOR_RELEASE": "Show both hands OPEN to rearm.",
         }[self.state]
 
+    @property
+    def content_mode(self):
+        return "FROZEN" if self.frozen_image is not None else "LIVE"
+
+    def toggle_frozen(self, raw_frame):
+        """Capture only raw BGR pixels, or release the existing in-memory crop."""
+        if self.state != "PLACED" or self.rectangle is None:
+            return False
+        if self.frozen_image is not None:
+            self.frozen_image = None
+            return True
+
+        box = self.rectangle
+        left, top = round(box.left), round(box.top)
+        # Round the size once, independently of position, so fractional dragging
+        # cannot change the captured image's pixel dimensions.
+        width, height = round(box.width), round(box.height)
+        frame_height, frame_width = raw_frame.shape[:2]
+        if (width < 1 or height < 1 or left < 0 or top < 0
+                or left + width > frame_width or top + height > frame_height):
+            return False
+        self.frozen_image = raw_frame[top:top + height, left:left + width].copy()
+        return True
+
+    def composite_frozen(self, display_frame):
+        """Paste the same frozen pixels on a display copy, without resizing."""
+        if self.rectangle is None or self.frozen_image is None:
+            return
+        left, top = round(self.rectangle.left), round(self.rectangle.top)
+        height, width = self.frozen_image.shape[:2]
+        frame_height, frame_width = display_frame.shape[:2]
+        if (left < 0 or top < 0 or left + width > frame_width
+                or top + height > frame_height):
+            self.reset()  # Clear both if the fixed-size content no longer fits.
+            return
+        display_frame[top:top + height, left:left + width] = self.frozen_image
+
     def reset(self):
         """Clear geometry and block creation until both hands are seen released."""
         self.rectangle = None
+        self.frozen_image = None
         self._active_ids = ()
         self._corners = {}
         self._pinch_states = {}
@@ -89,8 +127,10 @@ class RectangleInteraction:
     def prepare_camera_reconnect(self):
         """Cancel unfinished work, retaining only a placed rectangle provisionally."""
         placed = self.rectangle if self.state in ("PLACED", "DRAGGING", "WAITING_FOR_RELEASE") else None
+        frozen = self.frozen_image if placed is not None else None
         self.reset()
         self.rectangle = placed
+        self.frozen_image = frozen
 
     def finish_camera_reconnect(self, previous_size, current_size):
         """Discard saved geometry if the recovered frame has different dimensions."""

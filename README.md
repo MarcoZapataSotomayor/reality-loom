@@ -5,7 +5,8 @@ Landmarker. It detects up to two hands, draws their 21 landmarks and connections
 and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN` or
 `PINCH` label. Pinch with both hands to create one rectangle, then release either
 hand to place it. A fresh one-hand pinch inside the placed rectangle lets you drag
-it without resizing. It does not save images or video.
+it without resizing. Press F while placed to freeze only its image content in
+memory; video outside it remains live. It does not save images or video.
 
 ## Set up the local environment
 
@@ -155,8 +156,7 @@ MediaPipe dependencies. Named settings near the top are:
 
 Smoothing follows each track ID before the corners are sorted. The release frame
 does not move the rectangle because opening fingers can shift the midpoint.
-All rendering uses the display copy; raw camera frames remain untouched. There
-is no freezing of frames or recording.
+All rendering uses the display copy; raw camera frames remain untouched.
 
 ## Drag the placed rectangle
 
@@ -192,6 +192,35 @@ before interaction resumes. `--no-tracking` keeps the plain camera preview.
 If a normal frame-size change leaves room for the placed rectangle, it is moved
 inside the new bounds without resizing. If its fixed size cannot fit, it is
 cleared safely and both hands must be OPEN before creating again.
+
+## Toggle LIVE and FROZEN content
+
+Press **F** while the rectangle is **PLACED** to switch its content from **LIVE**
+to **FROZEN**, or back again. Content mode is shown on a separate line from the
+PLACED/DRAGGING interaction state. F is ignored when there is no placed rectangle,
+while dragging, during camera recovery/rearming, or while capture is paused with
+an error. It is also ignored in `--no-tracking` mode.
+
+- **LIVE:** the rectangle shows the current camera image at its current location.
+  Dragging moves its outline; it does not carry an earlier live crop.
+- **FROZEN:** F copies the current rectangle region from the raw BGR camera frame,
+  before any overlays are applied to those pixels. This independent crop is the
+  only retained image. Nothing is saved to disk and no temporal history is kept.
+  Dragging carries that exact image, without recapturing or resizing it.
+
+The rest of the preview stays live in either mode. Hand inference always uses
+the live raw camera image, even when frozen content visually covers a hand.
+The frozen image is composited onto the display copy before landmarks, borders,
+labels, and instructions are drawn, so those overlays remain visible and never
+become part of the captured image.
+
+Press F again after dropping a frozen rectangle to return to LIVE and release
+the stored crop. A later F captures new raw content at the rectangle's current
+position. **R** clears both geometry and the image. **C** cancels dragging and
+preserves frozen content only if its rectangle survives recovery with unchanged
+frame dimensions. Changed dimensions or any other rectangle reset clear both.
+Failed reconnect attempts retain the provisional rectangle and crop, and both
+hands must still be OPEN after recovery before interaction resumes.
 
 ## Diagnose a black preview
 
@@ -260,7 +289,8 @@ Each reconnect attempt forgets gesture hand associations and pinch history, and
 cancels unfinished rectangle creation. A placed rectangle is retained only if
 the next successfully captured frame has exactly the same width and height.
 A dimension change clears it. Failed attempts do not discard the provisionally
-saved placed rectangle. After success, two visible OPEN hands are required before
+saved placed rectangle or its frozen image. If the rectangle is cleared, its
+image is released as well. After success, two visible OPEN hands are required before
 interaction resumes. A retained rectangle can then be grabbed with a fresh pinch
 or cleared with R; an interrupted drag never resumes automatically.
 Recovery also works with `--no-tracking`, without importing MediaPipe or a model.
@@ -282,6 +312,8 @@ it is not a confirmed fix for the black-frame regression.
 - Press **C** to reconnect the current camera, or retry a failed reconnection.
 - With tracking enabled, press **R** to clear or cancel the rectangle. Show both
   hands OPEN before starting another rectangle.
+- Press **F** while PLACED to toggle LIVE/FROZEN content. Drop a dragged rectangle
+  before toggling. No images are written to disk.
 
 ## Troubleshooting
 
@@ -303,8 +335,8 @@ it is not a confirmed fix for the black-frame regression.
 
 Syntax, imports, dependency consistency, and `--help` were checked. The model
 initialized and processed three blank synthetic frames in `VIDEO` mode, reporting
-zero hands. Inference uses RGB input converted from a BGR preview copy;
-OpenCV draws the results on that copy and preserves the captured image. Timestamps
+zero hands. Inference uses RGB input converted from the live raw BGR frame;
+OpenCV composites content and draws results on a separate display copy. Timestamps
 come from a monotonic clock and increase by at least one millisecond per frame.
 
 MediaPipe printed native diagnostic warnings about feedback tensors and landmark
@@ -322,6 +354,13 @@ and replacement hands. Dragging tests cover fresh grab transitions, outside
 pinches, offsets, fixed dimensions, smoothing resets, bounds, release, hand loss,
 ownership, simultaneous grabs, and R/C resets. The camera-only mode remains
 independent of interaction.
+
+Frozen-content tests use synthetic BGR images and mocked camera/window calls.
+They cover independent copies, raw pixels without overlays, LIVE/FROZEN toggling,
+unchanged image identity and dimensions while moving, fractional positions, reset,
+and recovery retention/clearing. Preview-loop checks verify inference sees live
+input, overlays stay above the frozen composite, and F is ignored during recovery
+and in camera-only mode. No camera or MediaPipe model is initialized by these tests.
 
 Recovery tests use fake captures, controlled worker threads, mocked window calls,
 and synthetic pixels. They check release-before-reopen, same-index retries,
@@ -421,5 +460,28 @@ For the recovery manual test, use the same run command above:
 6. Repeat with `--no-tracking --debug-camera`; reconnection should remain usable
    without hand overlays, rectangle interaction, or model loading.
 
-Live dragging and its interaction with camera recovery require your manual
-confirmation. Automated checks did not access the camera.
+For the frozen-content manual test, use:
+
+```powershell
+.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
+```
+
+1. Place a rectangle and press F. Check separate PLACED and FROZEN labels. Move
+   something in view: the crop stays still while the surrounding video stays live.
+2. Grab and drag the frozen rectangle. Check that the same image moves with it,
+   at the same size. Press F during dragging and confirm it has no effect.
+3. Move a hand behind the frozen image. Check that live landmarks and pinch/drag
+   interaction still follow it and appear above the frozen pixels.
+4. Drop the rectangle, press F to return to LIVE, then drag it. Check that its
+   content follows the camera image at the current location rather than carrying
+   a previously viewed crop. Press F again to capture new content there.
+5. Press R and check that rectangle and image disappear. Create again and check
+   the initial content mode is LIVE.
+6. Freeze again and press C. With unchanged dimensions, check that the same crop
+   returns after recovery and both-OPEN rearming; a dimension change must clear
+   both rectangle and image. Pressing F during recovery must do nothing.
+7. Check F with no rectangle and with `--no-tracking`, and repeat Q, Escape,
+   window closing, and Ctrl+C exit checks.
+
+Live frozen content and its interaction with dragging/recovery require your
+manual confirmation. Automated checks did not access the camera.

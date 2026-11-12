@@ -104,7 +104,10 @@ def draw_rectangle_interaction(frame, interaction):
             (round(rectangle.right), round(rectangle.bottom)),
             color, 2, cv2.LINE_AA,
         )
-    lines = (f"Rectangle: {interaction.state.replace('_', ' ')}", interaction.instructions)
+    lines = [f"Rectangle: {interaction.state.replace('_', ' ')}"]
+    if rectangle is not None:
+        lines.append(f"Content: {interaction.content_mode} | F: toggle when placed")
+    lines.append(interaction.instructions)
     for row, text in enumerate(lines):
         position = (12, 60 + row * 24)
         cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
@@ -161,6 +164,7 @@ def main():
         print("Press C to reconnect this camera. Press Q or Escape, or close the window, to exit.")
         if tracker is not None:
             print("Pinch both hands to create a rectangle. Press R to clear it.")
+            print("Press F while placed to toggle LIVE / FROZEN content.")
         debug_logger = CameraDebugLogger()
         camera_error = None
 
@@ -178,11 +182,14 @@ def main():
                 if args.debug_camera:
                     debug_logger.report(camera, frame)
                 if tracker is not None:
-                    result = tracker.detect(preview_frame)
+                    # Inference always sees live input, even beneath frozen content.
+                    result = tracker.detect(frame)
                     hand_gestures = pinch_detector.update(
                         result.hand_landmarks, frame.shape[1], frame.shape[0]
                     )
                     interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
+                    interaction.composite_frozen(preview_frame)
+                    # Draw every overlay above the composite, never into the raw frame.
                     draw_hand_landmarks(preview_frame, result, hand_gestures)
                     draw_rectangle_interaction(preview_frame, interaction)
             cv2.imshow(WINDOW_TITLE, preview_frame)
@@ -191,6 +198,10 @@ def main():
                 break
             if tracker is not None and key in (ord("r"), ord("R")):
                 interaction.reset()
+            if (tracker is not None and key in (ord("f"), ord("F"))
+                    and recovery is None and camera_error is None):
+                # The raw frame is still untouched by the displayed overlays.
+                interaction.toggle_frozen(frame)
 
             # Some backends raise an error when the user has closed the window.
             try:
