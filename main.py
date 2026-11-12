@@ -161,12 +161,14 @@ def main():
             from gestures import PinchDetector
             from interaction import RectangleInteraction
             from freeze_control import FreezeController
+            from filter_toolbar import FilterToolbar
 
             # Check the model before opening the camera.
             tracker = HandTracker()
             pinch_detector = PinchDetector()
             interaction = RectangleInteraction()
             freeze_control = FreezeController()
+            toolbar = FilterToolbar()
         camera, frame = open_camera(args.camera)
         if camera is None:
             print(
@@ -181,12 +183,36 @@ def main():
             print("Pinch both hands to create a rectangle. Press R to clear it.")
             print("Press F while placed to toggle LIVE / FROZEN content.")
             print("Or open a hand fully, then hold a fist outside the placed rectangle for 0.8 s.")
+            print("Select a panel filter with the toolbar or keys 1-4 while idle / placed.")
         debug_logger = CameraDebugLogger()
         camera_error = None
 
         while True:
             # Keep the captured BGR image intact for diagnostics and future reads.
             preview_frame = frame.copy()
+            hand_gestures = []
+            selection_consumed = False
+            active = recovery is None and camera_error is None
+            if active:
+                if args.debug_camera:
+                    debug_logger.report(camera, frame)
+                if tracker is not None:
+                    # Inference always sees live input, even beneath panel effects.
+                    result = tracker.detect(frame)
+                    hand_gestures = pinch_detector.update(
+                        result.hand_landmarks, frame.shape[1], frame.shape[0]
+                    )
+
+            # Read keyboard input before gesture arbitration so keys 1-4 have the
+            # same priority as toolbar pinches, ahead of drag/resize starts.
+            key = cv2.waitKey(30 if not active else 1) & 0xFF
+            if tracker is not None:
+                control_key = key in (ord("q"), ord("Q"), 27, ord("r"), ord("R"), ord("c"), ord("C"))
+                can_select = active and not control_key and interaction.state in ("READY", "PLACED")
+                selection_consumed = toolbar.update(
+                    hand_gestures, frame.shape[1], frame.shape[0], can_select, key,
+                )
+
             if recovery is not None:
                 draw_camera_status(preview_frame, "Reconnecting camera...", "Q / Escape: exit")
             elif camera_error is not None:
@@ -195,24 +221,26 @@ def main():
                     "Check Camo Studio / iPad. C: retry | Q / Escape: exit",
                 )
             else:
-                if args.debug_camera:
-                    debug_logger.report(camera, frame)
                 if tracker is not None:
-                    # Inference always sees live input, even beneath frozen content.
-                    result = tracker.detect(frame)
-                    hand_gestures = pinch_detector.update(
-                        result.hand_landmarks, frame.shape[1], frame.shape[0]
-                    )
-                    interaction.update(hand_gestures, frame.shape[1], frame.shape[0])
-                    freeze_control.update(hand_gestures, interaction)
-                    interaction.composite_frozen(preview_frame)
+                    if selection_consumed:
+                        interaction.observe_pinches(hand_gestures)
+                        freeze_control.reset()
+                    else:
+                        panel_hands = toolbar.panel_hands(hand_gestures)
+                        interaction.update(panel_hands, frame.shape[1], frame.shape[0])
+                        freeze_control.update(panel_hands, interaction)
+                    if interaction.state not in ("READY", "PLACED"):
+                        toolbar.disable()
+                    interaction.composite_panel(frame, preview_frame, toolbar.selected)
                     # Draw every overlay above the composite, never into the raw frame.
                     draw_hand_landmarks(preview_frame, result, hand_gestures)
                     draw_rectangle_interaction(preview_frame, interaction)
                     if interaction.rectangle is not None:
                         draw_fist_feedback(preview_frame, freeze_control.message)
+            if tracker is not None:
+                toolbar.draw(preview_frame, hand_gestures,
+                             active and interaction.state in ("READY", "PLACED"))
             cv2.imshow(WINDOW_TITLE, preview_frame)
-            key = cv2.waitKey(30 if recovery is not None or camera_error else 1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
             if tracker is not None and key in (ord("r"), ord("R")):
@@ -232,6 +260,7 @@ def main():
                     pinch_detector.reset()
                     interaction.prepare_camera_reconnect()
                     freeze_control.reset()
+                    toolbar.disable()
                 old_camera = camera
                 camera = None  # Ownership moves to the worker until it publishes a result.
                 recovery = CameraReconnect(old_camera, args.camera, open_camera)
@@ -261,7 +290,7 @@ def main():
             if camera_error is not None:
                 continue
 
-            if tracker is not None:
+            if tracker is not None and not selection_consumed:
                 # Keyboard and fist requests share one raw-image action. C/R and
                 # exit checks above cancel pending requests before this point.
                 freeze_control.apply(interaction, frame, keyboard=key in (ord("f"), ord("F")))

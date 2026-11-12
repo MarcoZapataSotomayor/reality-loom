@@ -8,7 +8,8 @@ hand to place it. A fresh one-hand pinch inside the placed rectangle lets you dr
 it without resizing; two pinches at opposite corner handles resize it. Press F,
 or deliberately hold a fist outside the placed
 rectangle, to freeze/unfreeze its image content in memory. Video outside it
-remains live. It does not save images or video.
+remains live. A fixed toolbar or keys 1-4 select ORIGINAL, GRAYSCALE, PIXELATE, or
+NEON effects inside the panel only. It does not save images or video.
 
 ## Set up the local environment
 
@@ -22,8 +23,9 @@ Run these commands from the project directory in PowerShell. Use the existing
 
 Verified with Python **3.14.8**, MediaPipe **1.2.2**, and
 `opencv-contrib-python` **5.0.0.93** (`cv2` reports **5.0.0**, with Windows GUI
-support). The direct dependencies are pinned in `requirements.txt`; pip installs
-their dependencies automatically.
+support). Package pins are recorded in `requirements.txt`; pip installs their
+dependencies automatically. NumPy **2.5.4** was already installed through the
+existing dependencies and is used by the panel filters; no new package is needed.
 
 MediaPipe requires `opencv-contrib-python`, which includes desktop GUI support.
 Only one OpenCV distribution should be installed because they share the `cv2`
@@ -238,13 +240,67 @@ R clears the rectangle. C cancels resizing and applies the existing recovery and
 both-release rules, retaining geometry/content only when frame dimensions match.
 
 In LIVE mode, the resized rectangle shows current camera pixels at its current
-location. In FROZEN mode, each rendered size is generated from the **original
+location with the selected filter. In FROZEN mode, each rendered size is generated from the **original
 saved crop**, never from a previously resized result. The saved crop is not
 recaptured or modified. Independent width/height changes can **stretch the frozen
-image**. Returning to the original pixel dimensions displays the original pixels.
+image**. With ORIGINAL selected, returning to the original pixel dimensions displays
+the original pixels. Other filters are always derived from that source again.
 Dragging afterward transports the current sized content without further changes
 to rectangle dimensions. F is ignored during resizing, and fist holds are canceled
 and require a new full-open observation after returning to PLACED.
+
+## Select a panel filter
+
+A compact fixed toolbar sits near the bottom of the preview, above the fist
+feedback line. Its caption shows the selected filter, and the active button is
+highlighted. It does not move with the rectangle. Each hand has a small pointer
+at its thumb/index midpoint: white when released and yellow when pinching.
+
+| Key / button | Effect inside the rectangle |
+| --- | --- |
+| 1 ORIGINAL | Current source colors, without an effect. |
+| 2 GRAYSCALE | BGR luminance shown in all three channels. |
+| 3 PIXELATE | Coarse averaged blocks with sharp pixel boundaries. |
+| 4 NEON | Colored edge outlines on a black background. |
+
+When idle (**READY**) or **PLACED**, move a released pinch pointer onto a button,
+then pinch. The track ID must have been observed with its pinch released first;
+holding a pinch, moving it into a button, or moving between buttons while pinched
+does not select again. Release before another selection. This is pinch release,
+not the full-open pose required to arm the fist gesture.
+
+Keys **1-4** in the focused preview use the same selection action. Selection works
+before creating a rectangle. If two hands select simultaneously, the lowest track
+ID wins. An explicit keyboard choice wins over a simultaneous button pinch.
+
+Toolbar selection has priority over panel creation, drag-start, corner grabs,
+and fist toggling. The entire selection frame is consumed, including if the panel
+overlaps the toolbar or the selected button is already active. Pending fist
+progress is canceled. Pinches held on the selection frame stay excluded from panel
+manipulation until they release, so they cannot become a delayed drag or resize.
+
+Selection and keys 1-4 are disabled during creation, dragging, resizing, camera
+recovery/errors, and release-to-rearm states. The caption shows **selection paused**.
+For gesture selection, a released pinch must be seen again after returning to idle;
+an already-held pinch cannot activate a button as a busy state ends.
+
+The selected filter starts as ORIGINAL and survives **R** clearing and **C** recovery,
+even if recovery clears the rectangle. It applies to the next rectangle as well.
+`--no-tracking` remains a plain diagnostic camera view with no toolbar, pointers,
+panel effects, model loading, or gesture interaction.
+
+`filters.py` returns an independent `uint8`, three-channel BGR image at the requested
+panel size. LIVE effects use the current raw camera region. FROZEN effects use the
+unchanged original saved crop, scaled to the current geometry. Filter switching and
+resizing never accumulate effects or overwrite that source; ORIGINAL restores the
+unfiltered content. F/fist capture still saves raw, unfiltered pixels in memory.
+Outside the panel, video stays live and unfiltered apart from the visible overlays.
+Inference always receives the raw live image. Landmarks, borders, handles, toolbar,
+pointers, and instructions are drawn above the effect on the display copy.
+
+The implementations use only the existing OpenCV and NumPy packages. Named settings
+in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`, and
+`NEON_COLOR_BGR`. NEON is a simple edge effect; it does not retain previous frames.
 
 ## Toggle LIVE and FROZEN content
 
@@ -254,7 +310,8 @@ PLACED/DRAGGING/RESIZING interaction state. F is ignored when there is no placed
 while dragging or resizing, during camera recovery/rearming, or while capture is paused with
 an error. It is also ignored in `--no-tracking` mode.
 
-- **LIVE:** the rectangle shows the current camera image at its current location.
+- **LIVE:** the rectangle shows the current camera image at its current location,
+  with the selected filter applied only there.
   Dragging moves its outline; it does not carry an earlier live crop.
 - **FROZEN:** F copies the current rectangle region from the raw BGR camera frame,
   before any overlays are applied to those pixels. This independent crop is the
@@ -264,8 +321,8 @@ an error. It is also ignored in `--no-tracking` mode.
 
 The rest of the preview stays live in either mode. Hand inference always uses
 the live raw camera image, even when frozen content visually covers a hand.
-The frozen image is composited onto the display copy before landmarks, borders,
-labels, and instructions are drawn, so those overlays remain visible and never
+The selected effect is composited onto the display copy before landmarks, borders,
+handles, toolbar, labels, and instructions are drawn, so those overlays remain visible and never
 become part of the captured image.
 
 Press F again after dropping a frozen rectangle to return to LIVE and release
@@ -300,8 +357,10 @@ and disarms pending fist holds. If F and a fist qualify in the same frame, there
 is only one toggle.
 
 Creation, dragging, resizing, recovery, and rearming disable fist activation and require a
-full-open observation after returning to PLACED. A valid resize is processed first,
-then a valid pinch grab; either wins over a fist activation in the same frame. R and C clear pending
+full-open observation after returning to PLACED. Toolbar selection consumes the
+frame first; otherwise a valid resize is processed before a pinch grab, and either
+wins over a fist activation. Selecting a filter cancels pending fist progress.
+R and C clear pending
 holds and rearm state. Pinching itself never requests a content toggle; it keeps
 its existing creation/dragging role. `--no-tracking` loads no gesture logic.
 
@@ -424,6 +483,8 @@ it is not a confirmed fix for the black-frame regression.
   or finish resizing before toggling. No images are written to disk.
 - Or fully open a hand, then hold a closed fist outside the PLACED rectangle for
   0.8 seconds. Fully open that hand again before another activation.
+- Select a filter with a fresh pinch on a toolbar button or keys **1-4** while READY
+  or PLACED. Release before another button selection. The choice survives R and C.
 
 ## Troubleshooting
 
@@ -470,6 +531,14 @@ drag-to-resize upgrades, offsets without jumps, smoothing, bound/minimum clamps,
 fixed roles when pointers cross or results reorder, release/loss rearming, R/C,
 LIVE pixels, and scaling repeatedly from the original frozen crop.
 
+Filter tests cover output shape/dtype down to 1x1 panels, source immutability,
+ORIGINAL identity, grayscale luminance, pixel blocks, colored neon edges, panel-only
+compositing, and frozen-source preservation across filter/size changes. Toolbar
+tests check fresh edges, held-pinch rejection, disabled-state rearming, deterministic
+selection, consumed pinches, keyboard alternatives, overlap priority, pending-fist
+cancellation, raw live inference, and selection retention after R/C. All camera
+and window entry points in preview-loop tests are mocked.
+
 Frozen-content tests use synthetic BGR images and mocked camera/window calls.
 They cover independent copies, raw pixels without overlays, LIVE/FROZEN toggling,
 unchanged image identity and dimensions while moving, fractional positions, reset,
@@ -494,7 +563,7 @@ To repeat the checks without opening a camera:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\tests
 .\.venv\Scripts\python.exe -c "import cv2, mediapipe, main, hand_tracking; print('Imports OK')"
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe .\main.py --help
@@ -643,5 +712,27 @@ For the fist manual test, use the same run command above:
 7. Repeat the existing frozen-image, inference, exit-control, recovery, diagnostic,
    and `--no-tracking` checks. No camera behavior or dependency changes are needed.
 
-Live resizing and its interaction with dragging, frozen content, and fist control
-require your manual confirmation. Automated checks did not access the camera.
+For the filter manual test, run:
+
+```powershell
+.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
+```
+
+1. Before creating a panel, select a filter with keys 1-4. Create the panel and
+   check that only its content is affected, with raw live video outside it.
+2. Try all four filters in LIVE mode. Check the active button and caption, and that
+   landmarks, borders, handles, pointers, and instructions remain above the effect.
+3. Release, then pinch a button. Hold the pinch and move across other buttons;
+   check it selects only once. Pinch outside the toolbar and move inside; nothing
+   should change until a release and a fresh pinch.
+4. Place the panel over the toolbar, then select a button. Check that it does not
+   start dragging/resizing or trigger a fist toggle. Release before manipulating.
+5. Freeze the panel, switch filters, drag, and resize it. Select ORIGINAL again;
+   check the same unfiltered captured content returns without accumulated effects.
+6. Try buttons/keys during creation, dragging, resizing, and C recovery. They should
+   be disabled; release again after returning to idle before gesture selection.
+7. Press R and recover with C. Check the chosen filter remains selected. Repeat exit
+   controls and `--no-tracking`; that mode should show only the plain camera image.
+
+Live filters and toolbar selection require your manual confirmation. Automated
+checks did not access the camera.

@@ -112,8 +112,13 @@ class RectangleInteraction:
         return True
 
     def composite_frozen(self, display_frame):
-        """Render from the original crop, scaling only for the current geometry."""
-        if self.rectangle is None or self.frozen_image is None:
+        """Compatibility helper for rendering unfiltered frozen content."""
+        if self.frozen_image is not None:
+            self.composite_panel(None, display_frame)
+
+    def composite_panel(self, raw_frame, display_frame, filter_name="ORIGINAL"):
+        """Render a fresh effect from live raw pixels or the untouched original crop."""
+        if self.rectangle is None:
             return
         left, top = round(self.rectangle.left), round(self.rectangle.top)
         width, height = self.rectangle.pixel_size()
@@ -122,13 +127,14 @@ class RectangleInteraction:
                 or top + height > frame_height):
             self.reset()
             return
-        image = self.frozen_image
-        if image.shape[:2] != (height, width):
-            # Only image rendering needs the already installed OpenCV package.
-            import cv2
+        source = self.frozen_image
+        if source is None:
+            if raw_frame is None:
+                return
+            source = raw_frame[top:top + height, left:left + width]
+        from filters import apply_filter
 
-            image = cv2.resize(self.frozen_image, (width, height), interpolation=cv2.INTER_LINEAR)
-        display_frame[top:top + height, left:left + width] = image
+        display_frame[top:top + height, left:left + width] = apply_filter(source, filter_name, (width, height))
 
     def reset(self):
         """Clear geometry and block creation until both hands are seen released."""
@@ -162,11 +168,15 @@ class RectangleInteraction:
         if previous_size != current_size:
             self.reset()
 
+    def observe_pinches(self, hands):
+        """Record edges without manipulating during a consumed toolbar frame."""
+        self._pinch_states = {hand.track_id: hand.is_pinching for hand in hands}
+
     def update(self, hands, frame_width, frame_height):
         """Use gesture IDs, pinch states, and thumb/index midpoints from this frame."""
         previous_pinches = self._pinch_states
         # Forget missing IDs. A new/reappearing pinched hand has no OPEN history.
-        self._pinch_states = {hand.track_id: hand.is_pinching for hand in hands}
+        self.observe_pinches(hands)
 
         if self.state == "RESIZING":
             self._update_resize(hands, frame_width, frame_height)

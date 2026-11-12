@@ -164,7 +164,7 @@ class FrozenContentTests(unittest.TestCase):
 
 class FrozenPreviewTests(unittest.TestCase):
     def preview(self, interaction, frames, keys, draw_hands=None, recover=None, tracking=True,
-                gesture_frames=None):
+                gesture_frames=None, toolbar=None):
         """Exercise the real preview loop without native cameras, models, or windows."""
         inputs, shown = [], []
         camera, tracker, pinch = MagicMock(), MagicMock(), MagicMock()
@@ -188,12 +188,15 @@ class FrozenPreviewTests(unittest.TestCase):
                 stack.enter_context(patch.dict(main.sys.modules, {"hand_tracking": fake_tracking}))
                 stack.enter_context(patch("gestures.PinchDetector", return_value=pinch))
                 stack.enter_context(patch("interaction.RectangleInteraction", return_value=interaction))
+                if toolbar is not None:
+                    stack.enter_context(patch("filter_toolbar.FilterToolbar", return_value=toolbar))
             else:
                 arguments.append("--no-tracking")
                 original_import = builtins.__import__
 
                 def guard(name, *args, **kwargs):
-                    if name in ("hand_tracking", "gestures", "interaction", "freeze_control", "mediapipe"):
+                    if name in ("hand_tracking", "gestures", "interaction", "freeze_control",
+                                "filter_toolbar", "filters", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 
@@ -346,6 +349,154 @@ class FrozenPreviewTests(unittest.TestCase):
         expected = cv2.resize(original, interaction.rectangle.pixel_size())
         np.testing.assert_array_equal(shown[1][top + 20, left + 20], expected[20, 20])
         np.testing.assert_array_equal(shown[1][400, 450], second[400, 450])
+
+    def test_overlapping_toolbar_consumes_resize_start_and_f_key_until_pinches_release(self):
+        from filter_toolbar import FilterToolbar
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        interaction.rectangle = Rectangle(100, 380, 400, 470)
+        toolbar = FilterToolbar()
+        # This button point is also within the top-left corner's resize hit radius.
+        first, second = (122, 394), (400, 470)
+        gestures = [[pose_hand("open", 1, first), pose_hand("open", 2, second)],
+                    [pose_hand("neutral", 1, first, pinching=True),
+                     pose_hand("neutral", 2, second, pinching=True)],
+                    [pose_hand("neutral", 1, first, pinching=True),
+                     pose_hand("neutral", 2, second, pinching=True)]]
+        with patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
+            self.preview(interaction, [frame() for _ in gestures], [-1, ord("F"), ord("q")],
+                         gesture_frames=gestures, toolbar=toolbar)
+            toggle.assert_not_called()
+        self.assertEqual(toolbar.selected, "GRAYSCALE")
+        self.assertEqual(interaction.state, "PLACED")
+        self.assertEqual(interaction.rectangle, Rectangle(100, 380, 400, 470))
+
+    def test_keyboard_filter_consumes_a_simultaneous_inside_grab(self):
+        from filter_toolbar import FilterToolbar
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        toolbar = FilterToolbar()
+        gestures = [[pose_hand("open", 1, (150, 180))],
+                    [pose_hand("neutral", 1, (150, 180), pinching=True)],
+                    [pose_hand("neutral", 1, (150, 180), pinching=True)]]
+        self.preview(interaction, [frame() for _ in gestures], [-1, ord("3"), ord("q")],
+                     gesture_frames=gestures, toolbar=toolbar)
+        self.assertEqual(toolbar.selected, "PIXELATE")
+        self.assertEqual(interaction.state, "PLACED")
+
+    def test_toolbar_selection_cancels_pending_fist_and_keeps_live_raw_inference(self):
+        from filter_toolbar import FilterToolbar
+        from test_fist_gesture import pose_hand
+
+        interaction = placed_rectangle()
+        interaction.rectangle = Rectangle(100, 380, 400, 470)
+        toolbar = FilterToolbar()
+        point = (174, 402)
+        gestures = [[pose_hand("open", 1, (50, 50)), pose_hand("open", 2, point)],
+                    [pose_hand("fist", 1, (50, 50)), pose_hand("open", 2, point)],
+                    [pose_hand("fist", 1, (50, 50)), pose_hand("neutral", 2, point, pinching=True)],
+                    [pose_hand("fist", 1, (50, 50)), pose_hand("neutral", 2, point, pinching=True)]]
+        images = [frame((10 + index, 30, 90)) for index in range(4)]
+        with patch("freeze_control.time.monotonic", side_effect=[0.0, 1.0, 3.0]), \
+                patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
+            inputs, shown, labels = self.preview(
+                interaction, images, [-1, -1, -1, ord("q")], gesture_frames=gestures, toolbar=toolbar,
+            )
+            toggle.assert_not_called()
+        self.assertEqual(toolbar.selected, "GRAYSCALE")
+        self.assertTrue(any(label.startswith("Filter: GRAYSCALE") for label in labels))
+        self.assertEqual(len(set(int(value) for value in shown[3][438, 350])), 1)
+        for actual, expected in zip(inputs, images):
+            np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(shown[3][200, 500], images[3][200, 500])
+
+    def test_busy_states_disable_keyboard_selection(self):
+        from filter_toolbar import FilterToolbar
+        from test_fist_gesture import pose_hand
+
+        for state in ("CREATING", "DRAGGING", "RESIZING", "WAITING_FOR_RELEASE"):
+            with self.subTest(state=state):
+                interaction = placed_rectangle()
+                if state == "CREATING":
+                    interaction = RectangleInteraction()
+                if state in ("CREATING", "RESIZING"):
+                    samples = [pose_hand("neutral", 1, (100, 120), pinching=True),
+                               pose_hand("neutral", 2, (300, 280), pinching=True)]
+                    interaction.update(samples, WIDTH, HEIGHT)
+                elif state == "DRAGGING":
+                    samples = [pose_hand("neutral", 1, (150, 180), pinching=True)]
+                    interaction.update(samples, WIDTH, HEIGHT)
+                else:
+                    interaction.prepare_camera_reconnect()
+                    samples = []
+                self.assertEqual(interaction.state, state)
+                toolbar = FilterToolbar()
+                self.preview(interaction, [frame(), frame()], [ord("4"), ord("q")],
+                             gesture_frames=[samples, samples], toolbar=toolbar)
+                self.assertEqual(toolbar.selected, "ORIGINAL")
+
+    def test_selection_before_creation_persists_after_r(self):
+        from filter_toolbar import FilterToolbar
+
+        toolbar = FilterToolbar()
+        interaction = RectangleInteraction()
+        self.preview(interaction, [frame(), frame(), frame()], [ord("2"), ord("r"), ord("q")],
+                     toolbar=toolbar)
+        self.assertIsNone(interaction.rectangle)
+        self.assertEqual(toolbar.selected, "GRAYSCALE")
+
+    def test_two_toolbar_pinches_before_creation_do_not_create_a_panel(self):
+        from filter_toolbar import FilterToolbar
+        from test_fist_gesture import pose_hand
+
+        interaction = RectangleInteraction()
+        toolbar = FilterToolbar()
+        points = [(174, 402), (394, 402)]
+        released = [pose_hand("open", index + 1, point) for index, point in enumerate(points)]
+        pressed = [pose_hand("neutral", index + 1, point, pinching=True)
+                   for index, point in enumerate(points)]
+        self.preview(interaction, [frame(), frame(), frame()], [-1, -1, ord("q")],
+                     gesture_frames=[released, pressed, pressed], toolbar=toolbar)
+        self.assertEqual(toolbar.selected, "GRAYSCALE")
+        self.assertEqual(interaction.state, "READY")
+        self.assertIsNone(interaction.rectangle)
+
+    def test_freezing_with_an_effect_saves_raw_color_and_original_restores_it(self):
+        from filter_toolbar import FilterToolbar
+
+        interaction = placed_rectangle()
+        toolbar = FilterToolbar()
+        images = [frame((20 + index, 80, 200)) for index in range(5)]
+        inputs, shown, labels = self.preview(
+            interaction, images, [ord("2"), ord("F"), -1, ord("1"), ord("q")], toolbar=toolbar,
+        )
+        np.testing.assert_array_equal(interaction.frozen_image, images[1][120:280, 100:300])
+        self.assertEqual(len(set(int(value) for value in shown[2][140, 120])), 1)
+        np.testing.assert_array_equal(shown[3][140, 120], images[1][140, 120])
+        for actual, expected in zip(inputs, images):
+            np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(toolbar.selected, "ORIGINAL")
+
+    def test_successful_recovery_keeps_filter_and_disables_keys_while_pending(self):
+        from filter_toolbar import FilterToolbar
+
+        toolbar = FilterToolbar()
+        toolbar.select("GRAYSCALE")
+        interaction = placed_rectangle()
+        new_camera = MagicMock()
+        result = SimpleNamespace(camera=new_camera, frame=frame((60, 70, 80)), error=None)
+        job = MagicMock(poll=MagicMock(return_value=result))
+
+        def recover(camera, index, opener):
+            camera.release()
+            return job
+
+        self.preview(interaction, [frame()], [ord("c"), ord("4"), ord("q")],
+                     recover=recover, toolbar=toolbar)
+        new_camera.release.assert_called_once()
+        self.assertEqual(toolbar.selected, "GRAYSCALE")
 
 
 if __name__ == "__main__":
