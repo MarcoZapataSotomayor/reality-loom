@@ -4,7 +4,8 @@ A simple live camera preview with hand landmarks from MediaPipe Tasks Hand
 Landmarker. It detects up to two hands, draws their 21 landmarks and connections,
 and displays `Hands: 0`, `Hands: 1`, or `Hands: 2`. Each hand also has an `OPEN` or
 `PINCH` label. Pinch with both hands to create one rectangle, then release either
-hand to place it. It does not save images or video.
+hand to place it. A fresh one-hand pinch inside the placed rectangle lets you drag
+it without resizing. It does not save images or video.
 
 ## Set up the local environment
 
@@ -132,8 +133,9 @@ The preview shows the current rectangle state and a short instruction:
 3. Release either pinch while both hands are still tracked. The last preview is
    kept as **PLACED** if its width and height are each at least 40 pixels.
    A smaller rectangle is discarded.
-4. A placed rectangle remains fixed even when hands move or disappear. Press
-   **R** to clear it; only one rectangle can exist.
+4. A placed rectangle stays fixed until a fresh one-hand grab inside it. Use the
+   drag controls below to move it, or press **R** to clear it. Two-hand creation
+   is available only when no rectangle exists.
 5. After R, a discarded small rectangle, or tracking loss during creation, the
    state is **WAITING FOR RELEASE**. Show two visible OPEN hands to return to
    READY, then pinch both again. Missing hands do not count as released hands.
@@ -148,11 +150,48 @@ MediaPipe dependencies. Named settings near the top are:
 - `MIN_RECTANGLE_SIZE_PIXELS = 40.0`: minimum width **and** height for placement.
 - `POSITION_SMOOTHING = 0.35`: how much each new corner position contributes per
   frame; smaller values reduce jitter but add lag, and `1.0` disables smoothing.
+- `DRAG_SMOOTHING = 0.35`: position smoothing while dragging a placed rectangle.
+  It starts fresh at each grab and does not change the width or height.
 
 Smoothing follows each track ID before the corners are sorted. The release frame
 does not move the rectangle because opening fingers can shift the midpoint.
 All rendering uses the display copy; raw camera frames remain untouched. There
-is no dragging, freezing of frames, or recording.
+is no freezing of frames or recording.
+
+## Drag the placed rectangle
+
+1. Move one OPEN hand's thumb/index midpoint inside the placed rectangle, then
+   pinch. The same track ID must have been seen OPEN on the previous frame.
+   The label changes from **PLACED** to **DRAGGING**.
+2. Move that pinched hand to translate the rectangle. The original grab offset
+   is retained, so the rectangle does not snap to the hand. Light smoothing
+   reduces jitter, and the entire rectangle stays within the frame bounds.
+3. Release the pinch to drop it immediately at its current displayed position.
+   Width and height do not change. Opening fingers does not move the rectangle.
+4. To grab again, make another OPEN-to-PINCH transition inside the rectangle.
+   Pinching outside and moving inside cannot start a drag. A hand appearing
+   already pinched also cannot grab until it has been observed OPEN first.
+
+Only one hand controls a drag. Other hands and MediaPipe result reordering do
+not change ownership. If both hands make eligible grabs in the same frame, the
+lowest track ID wins. This rule is deterministic and does not depend on which
+result appears first.
+
+Losing the controlling track stops dragging without moving the rectangle. Held
+pinches cannot take over. Show the currently visible hands OPEN before trying a
+new grab; no visible hands does not count as a release. A single visible OPEN
+hand can rearm dragging after hand loss. The existing spatial tracking can still
+confuse identities when hands overlap or cross quickly.
+
+**R** clears the rectangle and all interaction history, then requires both hands
+OPEN before another two-hand creation. **C** stops a drag and keeps its current
+rectangle provisionally, using the existing camera recovery rules: unchanged
+dimensions retain it, changed dimensions clear it, and both hands must be OPEN
+before interaction resumes. `--no-tracking` keeps the plain camera preview.
+
+If a normal frame-size change leaves room for the placed rectangle, it is moved
+inside the new bounds without resizing. If its fixed size cannot fit, it is
+cleared safely and both hands must be OPEN before creating again.
 
 ## Diagnose a black preview
 
@@ -222,7 +261,8 @@ cancels unfinished rectangle creation. A placed rectangle is retained only if
 the next successfully captured frame has exactly the same width and height.
 A dimension change clears it. Failed attempts do not discard the provisionally
 saved placed rectangle. After success, two visible OPEN hands are required before
-interaction resumes. A retained rectangle then remains placed until R clears it.
+interaction resumes. A retained rectangle can then be grabbed with a fresh pinch
+or cleared with R; an interrupted drag never resumes automatically.
 Recovery also works with `--no-tracking`, without importing MediaPipe or a model.
 
 Camera release/open calls depend on the driver. They run off the UI thread during
@@ -278,7 +318,10 @@ missing-hand resets, and degenerate palm size.
 Rectangle tests also run without a camera or MediaPipe. They cover creation and
 placement, midpoint coordinates, position smoothing, release-to-rearm, R resets,
 minimum dimensions, crossed corners, bounds, result reordering, tracking loss,
-and replacement hands. The camera-only mode remains independent of interaction.
+and replacement hands. Dragging tests cover fresh grab transitions, outside
+pinches, offsets, fixed dimensions, smoothing resets, bounds, release, hand loss,
+ownership, simultaneous grabs, and R/C resets. The camera-only mode remains
+independent of interaction.
 
 Recovery tests use fake captures, controlled worker threads, mocked window calls,
 and synthetic pixels. They check release-before-reopen, same-index retries,
@@ -330,7 +373,7 @@ For the rectangle manual test, run:
    outline stays in bounds and never flips into negative dimensions. If tracking
    loses a hand, expect cancellation instead.
 3. Release either pinch with both hands still visible. Check PLACED and that moving
-   or pinching again does not change the rectangle.
+   open hands or holding a pinch from creation does not change the rectangle.
 4. Press R while both hands are pinching. Check WAITING FOR RELEASE and that held
    pinches cannot restart creation. Show both hands OPEN, then pinch to try again.
 5. Create a rectangle narrower or shorter than 40 pixels and release. Check that
@@ -340,6 +383,25 @@ For the rectangle manual test, run:
    both hands are shown OPEN.
 7. Repeat Q, Escape, window closing, and Ctrl+C exit checks. Also verify that
    `--no-tracking --debug-camera` shows the plain camera feed without interaction.
+
+For the dragging manual test, use the same run command above:
+
+1. Place a rectangle. Move an OPEN hand inside, then pinch. Check DRAGGING and
+   that the rectangle does not jump to the hand at grab time.
+2. Move slowly toward all frame edges. Check light smoothing, unchanged dimensions,
+   and that the whole rectangle stays visible. Release to drop it without drift.
+3. Pinch outside and move inside while holding the pinch. Check that it stays
+   PLACED. Open and pinch again inside to grab.
+4. Drag with one hand while the other pinches and moves. Check that ownership
+   stays with the original hand. Move the controlling hand out of view; the
+   rectangle must stop, with no takeover by an already-pinching hand.
+5. Show visible hands OPEN, then make a new grab. A returning hand still pinching
+   should not automatically resume dragging.
+6. During a drag, press R and check clearing/rearming. Place another rectangle,
+   drag it, and press C. Check recovery preservation and that both hands must be
+   OPEN before any fresh grab.
+7. Confirm two-hand creation cannot resize or replace a placed rectangle, and
+   verify Q, Escape, window closing, Ctrl+C, and `--no-tracking` still work.
 
 For the recovery manual test, use the same run command above:
 
@@ -359,5 +421,5 @@ For the recovery manual test, use the same run command above:
 6. Repeat with `--no-tracking --debug-camera`; reconnection should remain usable
    without hand overlays, rectangle interaction, or model loading.
 
-Live recovery and its effect on the intermittent black preview require your
-manual confirmation. Automated checks did not access the camera.
+Live dragging and its interaction with camera recovery require your manual
+confirmation. Automated checks did not access the camera.

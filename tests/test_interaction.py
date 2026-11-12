@@ -46,11 +46,12 @@ class RectangleInteractionTests(unittest.TestCase):
         self.assertEqual(self.interaction.state, "PLACED")
         self.assertEqual(self.interaction.rectangle, preview)
 
-    def test_placed_rectangle_stays_until_reset(self):
+    def test_placed_rectangle_is_not_recreated_by_outside_pinches(self):
         self.update(pair())
         self.update(pair(False))
         placed = self.interaction.rectangle
-        for hands in ([], pair(), [hand(7, (0, 0)), hand(8, (1000, 600))]):
+        outside = [hand(1, (100, 100)), hand(2, (900, 600))]
+        for hands in ([], outside, [hand(7, (0, 0)), hand(8, (1000, 600))]):
             self.update(hands)
             self.assertEqual(self.interaction.state, "PLACED")
             self.assertEqual(self.interaction.rectangle, placed)
@@ -116,12 +117,12 @@ class RectangleInteractionTests(unittest.TestCase):
             self.assertTrue(0 <= box.left <= box.right < WIDTH)
             self.assertTrue(0 <= box.top <= box.bottom < HEIGHT)
 
-    def test_placed_rectangle_stays_in_bounds_after_frame_size_change(self):
+    def test_smaller_frame_clears_rectangle_that_cannot_fit_without_resizing(self):
         self.update(pair())
         self.update(pair(False))
         self.interaction.update([], 320, 240)
-        self.assertEqual(self.interaction.state, "PLACED")
-        self.assertEqual(self.interaction.rectangle, Rectangle(200, 200, 319, 239))
+        self.assertEqual(self.interaction.state, "WAITING_FOR_RELEASE")
+        self.assertIsNone(self.interaction.rectangle)
 
     def test_missing_hand_cancels_instead_of_placing(self):
         for remaining in ([], [hand(1, (200, 200))], [hand(1, (200, 200), False)]):
