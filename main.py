@@ -116,7 +116,7 @@ def draw_rectangle_interaction(frame, interaction):
                            CORNER_HANDLE_RADIUS_PIXELS, color, -1, cv2.LINE_AA)
     lines = [interaction.status_text]
     if rectangle is not None:
-        lines.append(f"Content: {interaction.content_mode}   |   F: freeze / unfreeze")
+        lines.append(f"Content: {interaction.content_mode}   |   T: delay 2s   |   F: freeze / unfreeze")
     else:
         lines.append("N: new panel   |   C: reconnect   |   Q: exit")
     lines.append(interaction.instructions)
@@ -158,6 +158,7 @@ def main():
     camera = None
     tracker = None
     recovery = None
+    interaction = None
     try:
         if not args.no_tracking:
             # Import only when requested so camera-only mode never loads MediaPipe.
@@ -185,7 +186,7 @@ def main():
         print("C: reconnect | Q: exit | Escape: cancel new panel, or exit outside creation.")
         if tracker is not None:
             print("Pinch both hands to create. N: New panel | Delete: active panel | R: clear ALL panels")
-            print("Press F while placed to toggle LIVE / FROZEN content.")
+            print("T: toggle LIVE / DELAYED (2s). F: freeze displayed source / return to previous mode.")
             print("Or open a hand fully, then hold a fist outside the placed rectangle for 0.8 s.")
             print("Select a panel filter with the toolbar or keys 1-4 while idle / placed.")
         debug_logger = CameraDebugLogger()
@@ -201,6 +202,7 @@ def main():
                 if args.debug_camera:
                     debug_logger.report(camera, frame)
                 if tracker is not None:
+                    interaction.record_frame(frame)
                     # Inference always sees live input, even beneath panel effects.
                     result = tracker.detect(frame)
                     hand_gestures = pinch_detector.update(
@@ -256,7 +258,8 @@ def main():
                 toolbar.draw(preview_frame, hand_gestures,
                              active and interaction.toolbar_enabled,
                              interaction.can_new, interaction.can_delete,
-                             "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}")
+                             "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}",
+                             can_delay=interaction.can_delay, delayed=interaction.content_mode == "DELAYED")
             cv2.imshow(WINDOW_TITLE, preview_frame)
             if key in (ord("q"), ord("Q")) or (key == 27 and not escape_canceled):
                 break
@@ -337,6 +340,8 @@ def main():
         print(f"Could not continue the preview: {error}")
         return 1
     finally:
+        if interaction is not None:
+            interaction.history.clear()
         try:
             if recovery is not None:
                 recovery.close()

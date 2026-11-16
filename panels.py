@@ -1,8 +1,13 @@
 """Up to four panel data records, operated by one shared gesture controller."""
 
 from dataclasses import dataclass
+from time import monotonic
+
+import numpy as np
 
 from interaction import Rectangle, RectangleInteraction, composite_panel_pixels
+from temporal_history import DELAY_SECONDS, TemporalHistory
+from ui import MUTED, text
 
 
 MAX_PANELS = 4
@@ -14,10 +19,11 @@ class Panel:
     rectangle: Rectangle
     filter_name: str = "ORIGINAL"
     frozen_image: object = None
+    source_mode: str = "LIVE"  # Retained while FROZEN for unfreezing.
 
     @property
     def content_mode(self):
-        return "FROZEN" if self.frozen_image is not None else "LIVE"
+        return "FROZEN" if self.frozen_image is not None else self.source_mode
 
 
 class PanelCollection:
@@ -30,6 +36,8 @@ class PanelCollection:
         self._pinches = {}
         self.notice = ""
         self.creation_mode = True
+        self.history = TemporalHistory()
+        self._frame_time = 0.0
         if self.controller.rectangle is not None and self.controller.state not in ("READY", "CREATING"):
             self._commit_creation()
 
@@ -47,7 +55,20 @@ class PanelCollection:
 
     @property
     def content_mode(self):
-        return self.controller.content_mode
+        panel = self.active_panel
+        return panel.content_mode if panel is not None and not self.creation_mode else "LIVE"
+
+    @property
+    def can_delay(self):
+        return self.can_delete and self.active_panel.content_mode != "FROZEN"
+
+    def record_frame(self, raw_frame, now=None):
+        """Called once per live input, before inference, effects, or overlays."""
+        self._frame_time = monotonic() if now is None else now
+        self.history.record(raw_frame, self._frame_time)
+        if (self.notice.startswith("Buffering...")
+                and self.history.at(self._frame_time - DELAY_SECONDS) is not None):
+            self.notice = ""
 
     @property
     def selected_filter(self):
@@ -176,6 +197,17 @@ class PanelCollection:
             return self.begin_creation()
         if action == "DELETE":
             return self.delete_active()
+        if action == "DELAY":
+            if not self.can_delay:
+                self.notice = ("Unfreeze the active panel first." if self.active_panel
+                               else "Select a placed panel first.")
+                self.require_release()
+                return False
+            panel = self.active_panel
+            panel.source_mode = "LIVE" if panel.source_mode == "DELAYED" else "DELAYED"
+            self.require_release()
+            self.notice = f"Content: {panel.content_mode}. Release both hands."
+            return True
         return self.select_filter(action)
 
     def reset(self):
@@ -234,18 +266,42 @@ class PanelCollection:
             self.notice = ""
 
     def toggle_frozen(self, raw_frame):
-        if self.creation_mode or self.active_panel is None:
+        if self.creation_mode or self.active_panel is None or self.state != "PLACED":
             return False
-        changed = self.controller.toggle_frozen(raw_frame)
+        panel = self.active_panel
+        if panel.content_mode == "DELAYED":
+            source = self.history.delayed_crop(
+                self.rectangle, (raw_frame.shape[1], raw_frame.shape[0]), self._frame_time)
+            if source is None:
+                self.notice = "Buffering... Cannot freeze delayed content yet."
+                return False
+            self.controller.frozen_image = source.copy()
+            changed = True
+        else:
+            changed = self.controller.toggle_frozen(raw_frame)
         self._store_active()
+        if changed and self.notice.startswith("Buffering..."):
+            self.notice = ""
         return changed
 
     def composite(self, raw_frame, display_frame):
         invalid = []
         for panel in self.panels:
-            if not composite_panel_pixels(panel.rectangle, panel.frozen_image, raw_frame,
-                                          display_frame, panel.filter_name):
+            source = panel.frozen_image
+            buffering = False
+            if panel.content_mode == "DELAYED":
+                source = self.history.delayed_crop(
+                    panel.rectangle, (raw_frame.shape[1], raw_frame.shape[0]), self._frame_time)
+                buffering = source is None
+                if buffering:
+                    source = np.full((1, 1, 3), (29, 25, 23), dtype=np.uint8)
+            if not composite_panel_pixels(panel.rectangle, source, raw_frame,
+                                          display_frame, "ORIGINAL" if buffering else panel.filter_name):
                 invalid.append(panel)
+            elif buffering:
+                box = panel.rectangle
+                text(display_frame, "Buffering...", (round(box.left) + 8, round(box.top) + 36),
+                     max(0, round(box.width) - 16), 0.42, MUTED)
         for panel in invalid:
             self.panels.remove(panel)
         if invalid:
@@ -257,6 +313,7 @@ class PanelCollection:
             self.controller.composite_panel(raw_frame, display_frame, self.default_filter)
 
     def prepare_camera_reconnect(self):
+        self.history.clear()
         if not self.creation_mode:
             self._store_active()
         self.creation_mode = not self.panels
@@ -265,6 +322,7 @@ class PanelCollection:
         self.notice = "Camera recovering. Release both hands after reconnecting."
 
     def finish_camera_reconnect(self, previous_size, current_size):
+        self.history.clear()
         if previous_size != current_size:
             self.reset()
             self.notice = "Frame size changed; panels cleared. Release both hands."

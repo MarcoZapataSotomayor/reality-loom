@@ -57,7 +57,7 @@ class FilterToolbar:
         top = max(0, filters[0].top - BUTTON_HEIGHT - 12)
         return [FilterButton(name, TOOLBAR_MARGIN + index * (width + BUTTON_GAP), top,
                              TOOLBAR_MARGIN + index * (width + BUTTON_GAP) + width, top + BUTTON_HEIGHT)
-                for index, name in enumerate(("NEW", "DELETE"))]
+                for index, name in enumerate(("NEW", "DELETE", "DELAY"))]
 
     def select(self, name):
         """The one action shared by pinch selection and keys 1-4."""
@@ -93,6 +93,8 @@ class FilterToolbar:
             choice = "NEW"
         elif key in DELETE_KEYS:
             choice = "DELETE"
+        elif key in (ord("t"), ord("T")):
+            choice = "DELAY"
         if choice is None and candidates:
             choice = min(candidates, key=lambda item: item[0])[1]
         if choice is None:
@@ -107,7 +109,8 @@ class FilterToolbar:
         """A selecting pinch stays out of panel manipulation until it releases."""
         return [hand for hand in hands if hand.track_id not in self._consumed]
 
-    def draw(self, display_frame, hands, enabled, can_new=True, can_delete=True, context=""):
+    def draw(self, display_frame, hands, enabled, can_new=True, can_delete=True, context="",
+             can_delay=False, delayed=False):
         height, width = display_frame.shape[:2]
         buttons = self.buttons(width, height)
         actions = self.action_buttons(width, height)
@@ -116,10 +119,11 @@ class FilterToolbar:
         surface(display_frame, 4, max(0, actions[0].top - 30),
                 min(width - 1, buttons[-1].right + 3), buttons[0].bottom + 8)
         text(display_frame, caption, position, min(width - 24, buttons[-1].right - TOOLBAR_MARGIN), 0.4, MUTED)
-        labels = {"NEW": "N New panel", "DELETE": "Del Delete"}
+        labels = {"NEW": "N New panel", "DELETE": "Del Delete", "DELAY": "T Delay 2s"}
         for index, button in enumerate(buttons + actions):
-            selected = button.name == self.selected
-            allowed = enabled and (can_new if button.name == "NEW" else can_delete if button.name == "DELETE" else True)
+            selected = button.name == self.selected or (button.name == "DELAY" and delayed)
+            allowed = enabled and (can_new if button.name == "NEW" else can_delete if button.name == "DELETE"
+                                   else can_delay if button.name == "DELAY" else True)
             color = (83, 67, 25) if selected else (53, 47, 42) if allowed else (33, 30, 28)
             cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom), color, -1)
             cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom),

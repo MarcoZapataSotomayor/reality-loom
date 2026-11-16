@@ -2,8 +2,8 @@
 
 A live camera workspace with up to four independent panels. Create with two
 pinches, select/drag with a fresh one-hand pinch, resize at opposite handles,
-and toggle the active panel between LIVE and FROZEN with F or a deliberate fist.
-Each panel owns its geometry, original frozen crop, and filter.
+and choose LIVE, DELAYED (two seconds), or FROZEN content independently per panel.
+Each panel owns its geometry, temporal mode, original frozen crop, and filter.
 
 No images, video, panel history, or session state are saved to disk.
 
@@ -72,7 +72,7 @@ The application never switches indices automatically.
 ```
 
 `--no-tracking` is a plain camera diagnostic preview: no model, panels, toolbar,
-or gesture imports. C and the exit controls remain available.
+history buffer, or gesture imports. C and the exit controls remain available.
 
 ## Controls
 
@@ -83,14 +83,15 @@ or gesture imports. C and the exit controls remain available.
 | Fresh pinch inside a panel | Select it, bring it to front, and start dragging. |
 | Both pinches at opposite active handles | Start resizing; can upgrade a drag. |
 | Filter buttons / 1-4 | Change the active panel's filter, or the new-panel default if none is active. |
-| F / deliberate fist hold | Toggle only the active panel's LIVE/FROZEN content. |
+| Delay 2s button / T | Toggle only the active placed panel between LIVE and DELAYED; unfreeze first if FROZEN. |
+| F / deliberate fist hold | Freeze the active panel's displayed LIVE or DELAYED source; unfreeze to its previous mode. |
 | Delete button / Delete key | Remove only the active panel. |
 | R | Clear ALL panels and original crops; keep the default filter. |
 | C | Reconnect the selected camera; cancel pending operations/creation. |
 | Escape during new-panel creation with existing panels | Cancel the draft and keep existing panels. |
 | Escape otherwise / Q / window close / Ctrl+C | Exit. Q always exits. |
 
-New/Delete/filter actions are disabled during manipulation, explicit creation
+New/Delete/filter/delay actions are disabled during manipulation, explicit creation
 with existing panels, recovery, or release-to-rearm. At the four-panel limit,
 New is dimmed and attempts report the limit without adding or deleting anything.
 
@@ -121,7 +122,7 @@ An ongoing operation cannot transfer to another hand or another panel.
 
 Delete removes only the active panel and selects the remaining topmost panel.
 R is deliberately different: it clears the entire collection and every crop.
-After New/Delete/filter actions, two visible released pinches are required before
+After New/Delete/filter/delay actions, two visible released pinches are required before
 another manipulation. Held action pinches cannot become delayed grabs or drafts.
 
 ## Drag and resize
@@ -153,9 +154,19 @@ aspect-ratio lock. Geometry settings in `interaction.py` include:
 
 ## Per-panel content and filters
 
-LIVE samples the panel's region from the current raw live frame. FROZEN retains
-one independent raw BGR crop captured with F or a valid fist activation.
-Dragging transports that source; resizing always scales from the original crop.
+LIVE samples the panel's region from the current raw live frame. DELAYED samples
+the same current screen region from a shared historical frame approximately two
+seconds old. Moving/resizing a delayed panel changes that sampled region; it
+does not transport a fixed video crop. New panels always start LIVE.
+
+FROZEN retains one independent raw BGR crop captured with F or a valid fist
+activation, using the panel's current LIVE or DELAYED source before its filter.
+Unfreezing returns to that panel's previous LIVE or DELAYED mode. Delay 2s/T is
+dimmed for frozen panels and rejected until they are unfrozen. A delayed panel
+without sufficiently old history shows `Buffering...`; F/fist then leaves it
+delayed and reports that it cannot freeze yet.
+
+Dragging a frozen panel transports its source; resizing scales the original crop.
 Effects never accumulate into it, and no previously resized output is saved.
 
 F is accepted only while PLACED. Raw capture excludes other panels, landmarks,
@@ -164,7 +175,7 @@ pixels, even when frozen content visually covers a hand.
 
 Panels composite back-to-front on a fresh frame copy. Each LIVE source comes
 from raw input, never from a lower panel's composite. UI is drawn afterward.
-The HUD shows count, active ID, operation, and active LIVE/FROZEN state. Toolbar
+The HUD shows count, active ID, operation, and active LIVE/DELAYED/FROZEN mode. Toolbar
 rows are separate from the top HUD and bottom fist feedback.
 Text uses a single antialiased pass on solid dark surfaces for contrast, with
 long HUD labels truncated to fit instead of overlapping or shrinking indefinitely.
@@ -194,6 +205,41 @@ Filters return independent uint8, three-channel BGR pixels at the panel size.
 The implementations use only the existing OpenCV/NumPy packages. Named settings
 in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`,
 and `NEON_COLOR_BGR`.
+
+## Shared two-second video history
+
+`temporal_history.py` owns one timestamped raw BGR buffer shared by all panels.
+It records before inference, compositing, filters, or UI. No history is written
+to disk and no per-panel copy of the video history exists. Inference always uses
+the current full-resolution raw live frame, regardless of panel mode.
+
+Samples use monotonic time and are captured at no more than 15 FPS, downscaled
+to fit within 640x360 with aspect ratio preserved (subject to pixel rounding).
+Smaller input is not enlarged. The buffer retains approximately three seconds,
+evicting oldest samples to enforce both **48 frames** and **40 MiB of image
+data** as hard limits. At the maximum stored resolution, 48 BGR uint8 frames
+occupy about 31.6 MiB. The budget excludes Python overhead, live/preview frames,
+temporary rendering arrays, and independent frozen crops.
+
+For each delayed panel, the latest stored frame at or before `now - 2 seconds`
+is selected, never a newer fallback. If that target predates available history,
+the panel displays `Buffering...`. At a steady 15 FPS, the selected image can
+be approximately one sample interval (67 ms) older than the two-second target.
+Slower input or processing makes these gaps larger; timing is based on elapsed
+time, not a fixed frame count. Timestamps are taken when the app processes each
+raw input; camera/backend latency adds to what is visible in real time.
+
+Panel coordinates are mapped into the historical image using the live/stored
+width and height ratios, rounding crop bounds outward to cover the region.
+The crop is scaled to the panel size before applying its filter. Downscaling,
+resampling, and the lower sample rate can reduce sharpness and smoothness;
+frozen delayed content retains that reduced source quality.
+
+C/reconnection clears history immediately, even if reopening fails. Retained
+DELAYED panels buffer again after recovery. A raw frame-size change also clears
+history, and exiting clears it on normal and error paths. R deletes all panels
+and frozen crops; the single bounded history continues sampling while tracking
+is active. `--no-tracking` never creates a history buffer.
 
 ## Deliberate fist toggle
 
@@ -276,10 +322,13 @@ creation/cancellation, topmost hits, stacking and ownership, active resize
 priority, selected-only actions, clear-all, overlapping raw-source rendering,
 recovery, and consumed actions. All native camera/window/model entry points in
 preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
+Delayed-content tests cover irregular timestamps, warm-up, sampling, independent
+raw images, frame/byte limits, aspect-ratio mapping, per-panel modes, delayed
+freezing/unfreezing, recovery resets, live inference, and toolbar priorities.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
 ```
 
@@ -295,7 +344,7 @@ preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
    area of a lower panel to bring it forward. Check no snap or hand takeover.
 5. Resize only the active handles, including drag-to-resize. Test release, loss
    of a hand, crossing, minimum size, bounds, and both-release rearming.
-6. Give panels different filters and LIVE/FROZEN states. Move something in view;
+6. Give panels different filters and LIVE/DELAYED/FROZEN modes. Move something in view;
    overlapping LIVE panels must remain live, even over frozen/effected panels.
 7. Test F/fist, filters, Delete, and R. Only the active panel is affected until
    R explicitly clears all. Test a default filter before first creation and
@@ -303,6 +352,17 @@ preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
 8. Test toolbar overlap/held pinches, keyboard alternatives, busy-state disabling,
    C during creation/drag/resize, same-size recovery retention, and changed-size
    clearing. Repeat exit controls and plain `--no-tracking`.
+9. Just after startup or C, create/select a panel and press T. Check `Buffering...`
+   until two seconds of history exist, and verify F/fist during warm-up is ignored
+   with feedback. Once ready, compare motion in LIVE and DELAYED panels.
+10. Move/resize a delayed panel across distinct regions. Check it shows those
+    regions from two seconds ago, including when overlapping filtered panels.
+    Freeze with F and with a deliberate fist; only the active displayed source
+    should freeze. T must be dimmed/rejected while frozen. Unfreeze back to DELAYED,
+    then T back to LIVE. Test independent modes across all four panels.
+11. Reconnect with delayed and frozen panels present: at matching dimensions,
+    modes/crops survive and delayed panels warm up again. Assess responsiveness,
+    sampling smoothness, and memory use during a longer session yourself.
 
 Live testing remains manual. The 2D pose heuristics and spatial hand association
 can miss poses or confuse IDs with occlusion, edge-on hands, or fast crossings.
