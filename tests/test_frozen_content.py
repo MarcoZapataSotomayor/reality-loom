@@ -205,7 +205,7 @@ class FrozenPreviewTests(unittest.TestCase):
 
                 def guard(name, *args, **kwargs):
                     if name in ("hand_tracking", "gestures", "interaction", "freeze_control",
-                                "filter_toolbar", "filters", "panels", "temporal_history", "mediapipe"):
+                                "filter_toolbar", "delay_slider", "filters", "panels", "temporal_history", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 

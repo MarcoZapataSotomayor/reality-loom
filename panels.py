@@ -6,7 +6,7 @@ from time import monotonic
 import numpy as np
 
 from interaction import Rectangle, RectangleInteraction, composite_panel_pixels
-from temporal_history import DELAY_SECONDS, TemporalHistory
+from temporal_history import DELAY_SECONDS, TemporalHistory, quantize_delay
 from ui import MUTED, text
 
 
@@ -20,6 +20,7 @@ class Panel:
     filter_name: str = "ORIGINAL"
     frozen_image: object = None
     source_mode: str = "LIVE"  # Retained while FROZEN for unfreezing.
+    delay_seconds: float = DELAY_SECONDS
 
     @property
     def content_mode(self):
@@ -38,6 +39,7 @@ class PanelCollection:
         self.creation_mode = True
         self.history = TemporalHistory()
         self._frame_time = 0.0
+        self.adjusting_delay = False
         if self.controller.rectangle is not None and self.controller.state not in ("READY", "CREATING"):
             self._commit_creation()
 
@@ -62,12 +64,38 @@ class PanelCollection:
     def can_delay(self):
         return self.can_delete and self.active_panel.content_mode != "FROZEN"
 
+    @property
+    def can_adjust_delay(self):
+        return (self.can_delete and self.content_mode == "DELAYED"
+                and self.controller.can_start_manipulation)
+
+    def begin_delay_adjustment(self):
+        if not self.can_adjust_delay:
+            return False
+        self.adjusting_delay = True
+        self.notice = "Adjusting delay. Release the controlling pinch to finish."
+        return True
+
+    def set_delay(self, seconds):
+        if (self.active_panel is None or self.content_mode != "DELAYED"
+                or not (self.can_adjust_delay or self.adjusting_delay)):
+            return False
+        self.active_panel.delay_seconds = quantize_delay(seconds)
+        return True
+
+    def end_delay_adjustment(self):
+        if self.adjusting_delay:
+            self.adjusting_delay = False
+            self.require_release()
+            self.notice = "Delay adjusted. Release both hands to resume."
+
     def record_frame(self, raw_frame, now=None):
         """Called once per live input, before inference, effects, or overlays."""
         self._frame_time = monotonic() if now is None else now
         self.history.record(raw_frame, self._frame_time)
         if (self.notice.startswith("Buffering...")
-                and self.history.at(self._frame_time - DELAY_SECONDS) is not None):
+                and self.active_panel is not None
+                and self.history.delayed_frame(self._frame_time, self.active_panel.delay_seconds) is not None):
             self.notice = ""
 
     @property
@@ -78,7 +106,8 @@ class PanelCollection:
 
     @property
     def toolbar_enabled(self):
-        return self.state in ("READY", "PLACED") and (not self.creation_mode or not self.panels)
+        return (not self.adjusting_delay and self.state in ("READY", "PLACED")
+                and (not self.creation_mode or not self.panels))
 
     @property
     def can_new(self):
@@ -218,12 +247,15 @@ class PanelCollection:
         self.notice = "All panels cleared. Release both hands."
         self._pinches = {}
         self.controller.reset()
+        self.adjusting_delay = False
 
     def observe_pinches(self, hands):
         self._pinches = {hand.track_id: hand.is_pinching for hand in hands}
         self.controller.observe_pinches(hands)
 
     def update(self, hands, frame_width, frame_height):
+        if self.adjusting_delay:
+            return
         previous = self._pinches
         self._pinches = {hand.track_id: hand.is_pinching for hand in hands}
         if self.creation_mode:
@@ -266,12 +298,14 @@ class PanelCollection:
             self.notice = ""
 
     def toggle_frozen(self, raw_frame):
-        if self.creation_mode or self.active_panel is None or self.state != "PLACED":
+        if (self.adjusting_delay or self.creation_mode
+                or self.active_panel is None or self.state != "PLACED"):
             return False
         panel = self.active_panel
         if panel.content_mode == "DELAYED":
             source = self.history.delayed_crop(
-                self.rectangle, (raw_frame.shape[1], raw_frame.shape[0]), self._frame_time)
+                self.rectangle, (raw_frame.shape[1], raw_frame.shape[0]),
+                self._frame_time, panel.delay_seconds)
             if source is None:
                 self.notice = "Buffering... Cannot freeze delayed content yet."
                 return False
@@ -291,7 +325,8 @@ class PanelCollection:
             buffering = False
             if panel.content_mode == "DELAYED":
                 source = self.history.delayed_crop(
-                    panel.rectangle, (raw_frame.shape[1], raw_frame.shape[0]), self._frame_time)
+                    panel.rectangle, (raw_frame.shape[1], raw_frame.shape[0]),
+                    self._frame_time, panel.delay_seconds)
                 buffering = source is None
                 if buffering:
                     source = np.full((1, 1, 3), (29, 25, 23), dtype=np.uint8)
@@ -313,6 +348,7 @@ class PanelCollection:
             self.controller.composite_panel(raw_frame, display_frame, self.default_filter)
 
     def prepare_camera_reconnect(self):
+        self.adjusting_delay = False
         self.history.clear()
         if not self.creation_mode:
             self._store_active()

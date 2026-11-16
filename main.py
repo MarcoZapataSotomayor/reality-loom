@@ -116,7 +116,10 @@ def draw_rectangle_interaction(frame, interaction):
                            CORNER_HANDLE_RADIUS_PIXELS, color, -1, cv2.LINE_AA)
     lines = [interaction.status_text]
     if rectangle is not None:
-        lines.append(f"Content: {interaction.content_mode}   |   T: delay 2s   |   F: freeze / unfreeze")
+        delay = (interaction.active_panel.delay_seconds
+                 if not interaction.creation_mode and interaction.active_panel is not None else 2.0)
+        freeze_label = "unfreeze" if interaction.content_mode == "FROZEN" else "freeze"
+        lines.append(f"Content: {interaction.content_mode} | Delay: {delay:.1f} s | T: toggle | F: {freeze_label}")
     else:
         lines.append("N: new panel   |   C: reconnect   |   Q: exit")
     lines.append(interaction.instructions)
@@ -159,6 +162,7 @@ def main():
     tracker = None
     recovery = None
     interaction = None
+    slider = None
     try:
         if not args.no_tracking:
             # Import only when requested so camera-only mode never loads MediaPipe.
@@ -167,6 +171,7 @@ def main():
             from panels import PanelCollection
             from freeze_control import FreezeController
             from filter_toolbar import FilterToolbar
+            from delay_slider import DelaySlider
 
             # Check the model before opening the camera.
             tracker = HandTracker()
@@ -174,6 +179,7 @@ def main():
             interaction = PanelCollection()
             freeze_control = FreezeController()
             toolbar = FilterToolbar()
+            slider = DelaySlider()
         camera, frame = open_camera(args.camera)
         if camera is None:
             print(
@@ -186,7 +192,8 @@ def main():
         print("C: reconnect | Q: exit | Escape: cancel new panel, or exit outside creation.")
         if tracker is not None:
             print("Pinch both hands to create. N: New panel | Delete: active panel | R: clear ALL panels")
-            print("T: toggle LIVE / DELAYED (2s). F: freeze displayed source / return to previous mode.")
+            print("T: toggle LIVE / DELAYED. Slider or [ / ]: delay 0.5-2.5 s (default 2.0 s).")
+            print("F: freeze displayed source / return to previous mode.")
             print("Or open a hand fully, then hold a fist outside the placed rectangle for 0.8 s.")
             print("Select a panel filter with the toolbar or keys 1-4 while idle / placed.")
         debug_logger = CameraDebugLogger()
@@ -197,6 +204,7 @@ def main():
             preview_frame = frame.copy()
             hand_gestures = []
             selection_consumed = False
+            slider_consumed = False
             active = recovery is None and camera_error is None
             if active:
                 if args.debug_camera:
@@ -221,7 +229,10 @@ def main():
                         toolbar.disable()
                 toolbar.selected = interaction.selected_filter
                 control_key = key in (ord("q"), ord("Q"), 27, ord("r"), ord("R"), ord("c"), ord("C"))
-                can_select = active and not control_key and interaction.toolbar_enabled
+                slider_consumed = slider.update(
+                    toolbar.panel_hands(hand_gestures), frame.shape[1], frame.shape[0],
+                    interaction, active and not control_key, key)
+                can_select = active and not control_key and not slider_consumed and interaction.toolbar_enabled
                 selection_consumed = toolbar.update(
                     hand_gestures, frame.shape[1], frame.shape[0], can_select, key,
                 )
@@ -235,7 +246,11 @@ def main():
                 )
             else:
                 if tracker is not None:
-                    if selection_consumed:
+                    if slider_consumed:
+                        interaction.observe_pinches(hand_gestures)
+                        toolbar.disable()
+                        freeze_control.reset()
+                    elif selection_consumed:
                         interaction.apply_action(toolbar.action)
                         interaction.observe_pinches(hand_gestures)
                         freeze_control.reset()
@@ -260,6 +275,8 @@ def main():
                              interaction.can_new, interaction.can_delete,
                              "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}",
                              can_delay=interaction.can_delay, delayed=interaction.content_mode == "DELAYED")
+                slider.draw(preview_frame, interaction,
+                            active and (interaction.can_adjust_delay or interaction.adjusting_delay))
             cv2.imshow(WINDOW_TITLE, preview_frame)
             if key in (ord("q"), ord("Q")) or (key == 27 and not escape_canceled):
                 break
@@ -310,7 +327,7 @@ def main():
             if camera_error is not None:
                 continue
 
-            if tracker is not None and not selection_consumed and not escape_canceled:
+            if tracker is not None and not slider_consumed and not selection_consumed and not escape_canceled:
                 # Keyboard and fist requests share one raw-image action. C/R and
                 # exit checks above cancel pending requests before this point.
                 freeze_control.apply(interaction, frame, keyboard=key in (ord("f"), ord("F")))
@@ -340,6 +357,8 @@ def main():
         print(f"Could not continue the preview: {error}")
         return 1
     finally:
+        if slider is not None:
+            slider.cancel(interaction)
         if interaction is not None:
             interaction.history.clear()
         try:

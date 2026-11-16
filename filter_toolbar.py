@@ -119,7 +119,7 @@ class FilterToolbar:
         surface(display_frame, 4, max(0, actions[0].top - 30),
                 min(width - 1, buttons[-1].right + 3), buttons[0].bottom + 8)
         text(display_frame, caption, position, min(width - 24, buttons[-1].right - TOOLBAR_MARGIN), 0.4, MUTED)
-        labels = {"NEW": "N New panel", "DELETE": "Del Delete", "DELAY": "T Delay 2s"}
+        labels = {"NEW": "N New panel", "DELETE": "Del Delete", "DELAY": "T Delay"}
         for index, button in enumerate(buttons + actions):
             selected = button.name == self.selected or (button.name == "DELAY" and delayed)
             allowed = enabled and (can_new if button.name == "NEW" else can_delete if button.name == "DELETE"

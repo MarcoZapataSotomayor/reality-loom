@@ -2,7 +2,7 @@
 
 A live camera workspace with up to four independent panels. Create with two
 pinches, select/drag with a fresh one-hand pinch, resize at opposite handles,
-and choose LIVE, DELAYED (two seconds), or FROZEN content independently per panel.
+and choose LIVE, DELAYED (0.5-2.5 seconds), or FROZEN content independently per panel.
 Each panel owns its geometry, temporal mode, original frozen crop, and filter.
 
 No images, video, panel history, or session state are saved to disk.
@@ -83,7 +83,9 @@ history buffer, or gesture imports. C and the exit controls remain available.
 | Fresh pinch inside a panel | Select it, bring it to front, and start dragging. |
 | Both pinches at opposite active handles | Start resizing; can upgrade a drag. |
 | Filter buttons / 1-4 | Change the active panel's filter, or the new-panel default if none is active. |
-| Delay 2s button / T | Toggle only the active placed panel between LIVE and DELAYED; unfreeze first if FROZEN. |
+| Delay button / T | Toggle only the active placed panel between LIVE and DELAYED, retaining its configured delay; unfreeze first if FROZEN. |
+| Delay slider | Fresh released-pinch-to-pinch inside the track starts adjustment; move horizontally, release to finish. |
+| [ / ] | Decrease/increase the idle DELAYED panel's delay by 0.1 seconds. |
 | F / deliberate fist hold | Freeze the active panel's displayed LIVE or DELAYED source; unfreeze to its previous mode. |
 | Delete button / Delete key | Remove only the active panel. |
 | R | Clear ALL panels and original crops; keep the default filter. |
@@ -155,13 +157,15 @@ aspect-ratio lock. Geometry settings in `interaction.py` include:
 ## Per-panel content and filters
 
 LIVE samples the panel's region from the current raw live frame. DELAYED samples
-the same current screen region from a shared historical frame approximately two
-seconds old. Moving/resizing a delayed panel changes that sampled region; it
-does not transport a fixed video crop. New panels always start LIVE.
+the same current screen region from a shared historical frame at that panel's
+configured delay. Moving/resizing a delayed panel changes that sampled region;
+it does not transport a fixed video crop. New panels start LIVE with a configured
+delay of 2.0 seconds. Each panel retains its own delay across T toggles,
+freezing/unfreezing, selection, and same-size camera recovery.
 
 FROZEN retains one independent raw BGR crop captured with F or a valid fist
 activation, using the panel's current LIVE or DELAYED source before its filter.
-Unfreezing returns to that panel's previous LIVE or DELAYED mode. Delay 2s/T is
+Unfreezing returns to that panel's previous LIVE or DELAYED mode. Delay/T is
 dimmed for frozen panels and rejected until they are unfrozen. A delayed panel
 without sufficiently old history shows `Buffering...`; F/fist then leaves it
 delayed and reports that it cannot freeze yet.
@@ -206,7 +210,39 @@ The implementations use only the existing OpenCV/NumPy packages. Named settings
 in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`,
 and `NEON_COLOR_BGR`.
 
-## Shared two-second video history
+## Adjusting the rolling delay
+
+The HUD shows the active panel's configured delay, including while LIVE or
+FROZEN. An active DELAYED panel also shows a compact slider above the toolbar,
+with a marker and a value such as `Delay: 1.5 s`. This changes a rolling offset
+from the present; video continues advancing at the selected offset. It does
+not pause playback or scrub a saved timeline.
+
+Delay is clamped to 0.5-2.5 seconds in 0.1-second steps. Mapping uses integer
+tenths with halfway positions rounding upward to avoid accumulated step errors.
+A fresh released-pinch-to-pinch transition inside the slider track starts
+capture. Moving a held pinch onto the track does nothing. The initiating stable
+hand track ID owns capture even outside the track; horizontal movement is clamped
+at either end. Another hand cannot take over. Simultaneous starts use the lowest
+track ID.
+
+Capture takes priority over panel selection, dragging, resizing, toolbar actions,
+and fist holds. It consumes the gesture and cancels pending fist progress.
+While captured, creation, deletion, filters, T, F/fist, bracket adjustments, and
+panel manipulation are blocked. Releasing or losing the owner finishes capture
+and requires both visible hands to release before other gesture actions resume.
+R clears safely, C cancels capture and reconnects, and Q/Escape keep their usual
+exit/cancel behavior.
+
+`[` and `]` adjust only an idle DELAYED panel. They can repeat without visible
+hands. If a step coincides with pinched hands, those gestures are consumed and
+the existing both-release gate applies before further actions. Slider and key
+adjustment are disabled for LIVE/FROZEN panels, creation, dragging, resizing,
+release-to-rearm, and camera recovery. The slider is dimmed while temporarily
+disabled and hidden when the image is too short to fit it above the toolbar
+without covering the header; bracket keys remain available when idle.
+
+## Shared bounded video history
 
 `temporal_history.py` owns one timestamped raw BGR buffer shared by all panels.
 It records before inference, compositing, filters, or UI. No history is written
@@ -221,10 +257,12 @@ data** as hard limits. At the maximum stored resolution, 48 BGR uint8 frames
 occupy about 31.6 MiB. The budget excludes Python overhead, live/preview frames,
 temporary rendering arrays, and independent frozen crops.
 
-For each delayed panel, the latest stored frame at or before `now - 2 seconds`
-is selected, never a newer fallback. If that target predates available history,
+For each delayed panel, the latest stored frame at or before
+`now - panel.delay_seconds` is selected, with a tolerance of the input timestamps'
+floating-point precision to handle subtraction at sample boundaries. If that
+target predates available history,
 the panel displays `Buffering...`. At a steady 15 FPS, the selected image can
-be approximately one sample interval (67 ms) older than the two-second target.
+be approximately one sample interval (67 ms) older than the configured target.
 Slower input or processing makes these gaps larger; timing is based on elapsed
 time, not a fixed frame count. Timestamps are taken when the app processes each
 raw input; camera/backend latency adds to what is visible in real time.
@@ -325,10 +363,14 @@ preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
 Delayed-content tests cover irregular timestamps, warm-up, sampling, independent
 raw images, frame/byte limits, aspect-ratio mapping, per-panel modes, delayed
 freezing/unfreezing, recovery resets, live inference, and toolbar priorities.
+Adjustment tests cover slider mapping/rounding, fresh pinches, stable ownership,
+release/loss rearming, disabled states, keyboard steps, capture priority,
+independent offsets, freeze retention, recovery cancellation, and unchanged
+history image/frame budgets.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\delay_slider.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
 ```
 
@@ -353,16 +395,27 @@ freezing/unfreezing, recovery resets, live inference, and toolbar priorities.
    C during creation/drag/resize, same-size recovery retention, and changed-size
    clearing. Repeat exit controls and plain `--no-tracking`.
 9. Just after startup or C, create/select a panel and press T. Check `Buffering...`
-   until two seconds of history exist, and verify F/fist during warm-up is ignored
+   until the configured amount of history exists, and verify F/fist during warm-up is ignored
    with feedback. Once ready, compare motion in LIVE and DELAYED panels.
 10. Move/resize a delayed panel across distinct regions. Check it shows those
-    regions from two seconds ago, including when overlapping filtered panels.
+    regions from the configured delay ago, including when overlapping filtered panels.
     Freeze with F and with a deliberate fist; only the active displayed source
     should freeze. T must be dimmed/rejected while frozen. Unfreeze back to DELAYED,
     then T back to LIVE. Test independent modes across all four panels.
 11. Reconnect with delayed and frozen panels present: at matching dimensions,
     modes/crops survive and delayed panels warm up again. Assess responsiveness,
     sampling smoothness, and memory use during a longer session yourself.
+12. Adjust different delayed panels to 0.5, 1.5, and 2.5 seconds using the slider
+    and bracket keys. Check the endpoints, 0.1-second steps, marker, and label.
+    Freeze/unfreeze and toggle T; each panel must keep its own value.
+13. Pinch outside the track and move onto it: adjustment must not start. Freshly
+    pinch inside it, move outside horizontally/vertically, and verify only the
+    owning hand changes the delay. Release or lose that hand; held pinches must
+    not become grabs, resizes, or toolbar actions until both hands release.
+14. Capture the slider where it overlaps a panel/handle. Attempt filters, New,
+    Delete, T, F/fist, and bracket keys while adjusting; they must be blocked.
+    Test R, C, Q, and Escape during capture. Confirm LIVE/FROZEN, manipulation,
+    creation, and recovery disable adjustment, and plain `--no-tracking` stays plain.
 
 Live testing remains manual. The 2D pose heuristics and spatial hand association
 can miss poses or confuse IDs with occlusion, edge-on hands, or fast crossings.
