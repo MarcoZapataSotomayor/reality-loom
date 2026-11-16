@@ -7,7 +7,7 @@ import numpy as np
 
 from interaction import Rectangle, RectangleInteraction, composite_panel_pixels
 from temporal_history import DELAY_SECONDS, TemporalHistory, quantize_delay
-from ui import MUTED, text
+from ui import draw_buffering
 
 
 MAX_PANELS = 4
@@ -167,6 +167,16 @@ class PanelCollection:
         else:
             self.controller.reset()
         self._pinches = {}
+
+    def suspend_for_help(self):
+        """Discard a draft, or stop movement at the latest committed geometry."""
+        if not self.creation_mode:
+            self._store_active()
+        self.adjusting_delay = False
+        self.creation_mode = not self.panels
+        self._load_active(require_release=True)
+        self._pinches = {}
+        self.notice = "Release both hands to resume. H: help."
 
     def begin_creation(self):
         if self.creation_mode or not self.toolbar_enabled:
@@ -334,9 +344,7 @@ class PanelCollection:
                                           display_frame, "ORIGINAL" if buffering else panel.filter_name):
                 invalid.append(panel)
             elif buffering:
-                box = panel.rectangle
-                text(display_frame, "Buffering...", (round(box.left) + 8, round(box.top) + 36),
-                     max(0, round(box.width) - 16), 0.42, MUTED)
+                draw_buffering(display_frame, panel.rectangle)
         for panel in invalid:
             self.panels.remove(panel)
         if invalid:

@@ -5,14 +5,9 @@ from dataclasses import dataclass
 import cv2
 
 from filters import FILTER_NAMES
-from ui import ACCENT, MUTED, TEXT, surface, text
+from ui import ACCENT, MUTED, TEXT, Layout, card, surface, text
 
 
-TOOLBAR_MARGIN = 12
-BUTTON_WIDTH = 104
-BUTTON_HEIGHT = 28
-BUTTON_GAP = 6
-TOOLBAR_BOTTOM_MARGIN = 64
 POINTER_RADIUS = 6
 KEY_FILTERS = {ord(str(index + 1)): name for index, name in enumerate(FILTER_NAMES)}
 DELETE_KEYS = (0x2E0000, 0xFFFF, 127)  # Windows waitKeyEx, X11, and common backspace/delete.
@@ -39,12 +34,8 @@ class FilterToolbar:
 
     @staticmethod
     def buttons(frame_width, frame_height):
-        available = frame_width - 2 * TOOLBAR_MARGIN - 3 * BUTTON_GAP
-        width = max(1, min(BUTTON_WIDTH, available // 4))
-        top = max(0, frame_height - TOOLBAR_BOTTOM_MARGIN - BUTTON_HEIGHT)
-        return [FilterButton(name, TOOLBAR_MARGIN + index * (width + BUTTON_GAP), top,
-                             TOOLBAR_MARGIN + index * (width + BUTTON_GAP) + width, top + BUTTON_HEIGHT)
-                for index, name in enumerate(FILTER_NAMES)]
+        return [FilterButton(name, box.left, box.top, box.right, box.bottom)
+                for name, box in zip(FILTER_NAMES, Layout(frame_width, frame_height).filters)]
 
     def disable(self):
         """Keep the choice, but require a released pinch after returning to idle."""
@@ -52,12 +43,8 @@ class FilterToolbar:
 
     @classmethod
     def action_buttons(cls, frame_width, frame_height):
-        filters = cls.buttons(frame_width, frame_height)
-        width = filters[0].right - filters[0].left
-        top = max(0, filters[0].top - BUTTON_HEIGHT - 12)
-        return [FilterButton(name, TOOLBAR_MARGIN + index * (width + BUTTON_GAP), top,
-                             TOOLBAR_MARGIN + index * (width + BUTTON_GAP) + width, top + BUTTON_HEIGHT)
-                for index, name in enumerate(("NEW", "DELETE", "DELAY"))]
+        return [FilterButton(name, box.left, box.top, box.right, box.bottom)
+                for name, box in zip(("NEW", "DELETE", "DELAY"), Layout(frame_width, frame_height).actions)]
 
     def select(self, name):
         """The one action shared by pinch selection and keys 1-4."""
@@ -112,27 +99,30 @@ class FilterToolbar:
     def draw(self, display_frame, hands, enabled, can_new=True, can_delete=True, context="",
              can_delay=False, delayed=False):
         height, width = display_frame.shape[:2]
+        layout = Layout(width, height)
+        if layout.toolbar is None:
+            return
         buttons = self.buttons(width, height)
         actions = self.action_buttons(width, height)
-        caption = (context or "Panel filters") + ("  |  pinch / keys 1-4" if enabled else "  |  controls paused")
-        position = (TOOLBAR_MARGIN, max(12, actions[0].top - 10))
-        surface(display_frame, 4, max(0, actions[0].top - 30),
-                min(width - 1, buttons[-1].right + 3), buttons[0].bottom + 8)
-        text(display_frame, caption, position, min(width - 24, buttons[-1].right - TOOLBAR_MARGIN), 0.4, MUTED)
+        caption = (context or "Panel controls") + ("  |  pinch to select" if enabled else "  |  controls paused")
+        card(display_frame, layout.toolbar)
+        text(display_frame, caption, (layout.toolbar.left + 8, layout.toolbar.top + round(19 * layout.scale)),
+             layout.toolbar.width - 16, 0.4 * layout.scale, MUTED)
         labels = {"NEW": "N New panel", "DELETE": "Del Delete", "DELAY": "T Delay"}
         for index, button in enumerate(buttons + actions):
             selected = button.name == self.selected or (button.name == "DELAY" and delayed)
             allowed = enabled and (can_new if button.name == "NEW" else can_delete if button.name == "DELETE"
                                    else can_delay if button.name == "DELAY" else True)
             color = (83, 67, 25) if selected else (53, 47, 42) if allowed else (33, 30, 28)
-            cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom), color, -1)
+            surface(display_frame, button.left, button.top, button.right, button.bottom, color, 0.92)
             cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom),
                           ACCENT if selected else (94, 85, 74), 1)
             label = labels.get(button.name, f"{index + 1} {button.name}")
-            text_width = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
-            scale = 0.42 * min(1.0, (button.right - button.left - 8) / max(1, text_width))
-            text(display_frame, label, (button.left + 4, button.top + 19),
-                 button.right - button.left - 8, max(0.1, scale),
+            text_width = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45 * layout.scale, 1)[0][0]
+            scale = 0.45 * layout.scale * min(1.0, (button.right - button.left - 16) / max(1, text_width))
+            baseline = button.top + (button.bottom - button.top) // 2 + round(5 * layout.scale)
+            text(display_frame, label, (button.left + 8, baseline),
+                 button.right - button.left - 16, scale,
                  TEXT if allowed else (130, 130, 130))
         for hand in hands:
             point = (round(hand.pinch_point[0]), round(hand.pinch_point[1]))

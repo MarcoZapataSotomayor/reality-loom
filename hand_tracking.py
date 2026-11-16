@@ -9,7 +9,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 from gestures import INDEX_TIP, THUMB_TIP
-from ui import ACCENT, badge, surface, text
+from ui import badge
 
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "hand_landmarker.task"
@@ -95,8 +95,3 @@ def draw_hand_landmarks(bgr_frame, result, hand_gestures=None):
                 max(text_size[1] + 5, points[0][1] - 12),
             )
             badge(bgr_frame, gesture_label, label_position, color)
-
-    width = bgr_frame.shape[1]
-    surface(bgr_frame, 0, 0, width - 1, 35)
-    text(bgr_frame, "REALITY LOOM", (12, 24), max(0, width - 140), 0.55, ACCENT)
-    text(bgr_frame, f"Hands: {len(result.hand_landmarks)}", (max(12, width - 108), 24), 96)

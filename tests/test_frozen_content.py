@@ -205,7 +205,7 @@ class FrozenPreviewTests(unittest.TestCase):
 
                 def guard(name, *args, **kwargs):
                     if name in ("hand_tracking", "gestures", "interaction", "freeze_control",
-                                "filter_toolbar", "delay_slider", "filters", "panels", "temporal_history", "mediapipe"):
+                                "filter_toolbar", "delay_slider", "help_overlay", "filters", "panels", "temporal_history", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 
@@ -241,9 +241,9 @@ class FrozenPreviewTests(unittest.TestCase):
         np.testing.assert_array_equal(interaction.frozen_image, first[120:280, 100:300])
         np.testing.assert_array_equal(inputs[0], first)
         np.testing.assert_array_equal(inputs[1], second)
-        np.testing.assert_array_equal(shown[1][140, 120], first[140, 120])
+        np.testing.assert_array_equal(shown[1][180, 180], first[180, 180])
         np.testing.assert_array_equal(shown[1][125, 105], marker)
-        np.testing.assert_array_equal(shown[1][400, 450], second[400, 450])
+        np.testing.assert_array_equal(shown[1][220, 600], second[220, 600])
         self.assertTrue(any(text.startswith("Content: LIVE") for text in labels))
         self.assertTrue(any(text.startswith("Content: FROZEN") for text in labels))
         np.testing.assert_array_equal(first, frame())
@@ -356,18 +356,20 @@ class FrozenPreviewTests(unittest.TestCase):
         np.testing.assert_array_equal(inputs[1], second)
         left, top = round(interaction.rectangle.left), round(interaction.rectangle.top)
         expected = cv2.resize(original, interaction.rectangle.pixel_size())
-        np.testing.assert_array_equal(shown[1][top + 20, left + 20], expected[20, 20])
-        np.testing.assert_array_equal(shown[1][400, 450], second[400, 450])
+        np.testing.assert_array_equal(shown[1][top + 50, left + 50], expected[50, 50])
+        np.testing.assert_array_equal(shown[1][220, 600], second[220, 600])
 
     def test_overlapping_toolbar_consumes_resize_start_and_f_key_until_pinches_release(self):
         from filter_toolbar import FilterToolbar
         from test_fist_gesture import pose_hand
 
         interaction = placed_rectangle()
-        interaction.rectangle = Rectangle(100, 380, 400, 470)
         toolbar = FilterToolbar()
+        button = toolbar.buttons(WIDTH, HEIGHT)[1]
+        interaction.rectangle = Rectangle(button.left, button.top, 400, 470)
+        original_box = interaction.rectangle
         # This button point is also within the top-left corner's resize hit radius.
-        first, second = (122, 394), (400, 470)
+        first, second = (button.left + 10, button.top + 10), (400, 470)
         gestures = [[pose_hand("open", 1, first), pose_hand("open", 2, second)],
                     [pose_hand("neutral", 1, first, pinching=True),
                      pose_hand("neutral", 2, second, pinching=True)],
@@ -379,7 +381,7 @@ class FrozenPreviewTests(unittest.TestCase):
             toggle.assert_not_called()
         self.assertEqual(toolbar.selected, "GRAYSCALE")
         self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
-        self.assertEqual(interaction.rectangle, Rectangle(100, 380, 400, 470))
+        self.assertEqual(interaction.rectangle, original_box)
 
     def test_keyboard_filter_consumes_a_simultaneous_inside_grab(self):
         from filter_toolbar import FilterToolbar
@@ -416,7 +418,7 @@ class FrozenPreviewTests(unittest.TestCase):
             toggle.assert_not_called()
         self.assertEqual(toolbar.selected, "GRAYSCALE")
         self.assertTrue(any(label.startswith("Filter: GRAYSCALE") for label in labels))
-        self.assertEqual(len(set(int(value) for value in shown[3][438, 350])), 1)
+        self.assertEqual(len(set(int(value) for value in shown[3][432, 350])), 1)
         for actual, expected in zip(inputs, images):
             np.testing.assert_array_equal(actual, expected)
         np.testing.assert_array_equal(shown[3][200, 500], images[3][200, 500])
@@ -486,8 +488,8 @@ class FrozenPreviewTests(unittest.TestCase):
             gesture_frames=[released] * len(images), toolbar=toolbar,
         )
         np.testing.assert_array_equal(interaction.frozen_image, images[2][120:280, 100:300])
-        self.assertEqual(len(set(int(value) for value in shown[3][140, 120])), 1)
-        np.testing.assert_array_equal(shown[5][140, 120], images[2][140, 120])
+        self.assertEqual(len(set(int(value) for value in shown[3][180, 180])), 1)
+        np.testing.assert_array_equal(shown[5][180, 180], images[2][180, 180])
         for actual, expected in zip(inputs, images):
             np.testing.assert_array_equal(actual, expected)
         self.assertEqual(toolbar.selected, "ORIGINAL")

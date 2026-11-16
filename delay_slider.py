@@ -4,10 +4,8 @@ from dataclasses import dataclass
 
 import cv2
 
-from filter_toolbar import (BUTTON_GAP, BUTTON_HEIGHT, BUTTON_WIDTH,
-                            TOOLBAR_BOTTOM_MARGIN, TOOLBAR_MARGIN)
 from temporal_history import MIN_DELAY_SECONDS, MAX_DELAY_SECONDS, quantize_delay
-from ui import ACCENT, MUTED, surface, text
+from ui import ACCENT, MUTED, Layout, card, text
 
 
 @dataclass
@@ -39,16 +37,8 @@ class DelaySlider:
 
     @staticmethod
     def track(frame_width, frame_height):
-        filter_top = max(0, frame_height - TOOLBAR_BOTTOM_MARGIN - BUTTON_HEIGHT)
-        action_top = max(0, filter_top - BUTTON_HEIGHT - 12)
-        y = action_top - 52
-        # Keep the header, slider caption, and toolbar caption in separate rows.
-        if y - 30 < 114 or frame_width < 160:
-            return None
-        available = frame_width - 2 * TOOLBAR_MARGIN - 3 * BUTTON_GAP
-        button_width = max(1, min(BUTTON_WIDTH, available // 4))
-        right = TOOLBAR_MARGIN + 4 * button_width + 3 * BUTTON_GAP
-        return SliderTrack(TOOLBAR_MARGIN + 8, right - 8, y)
+        geometry = Layout(frame_width, frame_height).slider_track
+        return SliderTrack(*geometry) if geometry is not None else None
 
     def cancel(self, interaction):
         self.owner_id = None
@@ -103,13 +93,14 @@ class DelaySlider:
         if interaction.content_mode != "DELAYED" or interaction.creation_mode:
             return
         height, width = frame.shape[:2]
+        layout = Layout(width, height)
         track = self.track(width, height)
         if track is None:
             return
-        surface(frame, track.left - 8, track.y - 30, track.right + 8, track.y + 14)
+        card(frame, layout.slider)
         color = ACCENT if enabled else MUTED
         value = interaction.active_panel.delay_seconds
-        text(frame, f"Delay: {value:.1f} s   [ / ]", (track.left, track.y - 12),
-             track.right - track.left, 0.42, color)
+        text(frame, f"Delay: {value:.1f} s   [ / ]", (track.left, layout.slider.top + round(19 * layout.scale)),
+             track.right - track.left, 0.45 * layout.scale, color)
         cv2.line(frame, (track.left, track.y), (track.right, track.y), MUTED, 2, cv2.LINE_AA)
         cv2.circle(frame, (track.marker_x(value), track.y), 5, color, -1, cv2.LINE_AA)

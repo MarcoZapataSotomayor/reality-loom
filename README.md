@@ -90,6 +90,8 @@ history buffer, or gesture imports. C and the exit controls remain available.
 | Delete button / Delete key | Remove only the active panel. |
 | R | Clear ALL panels and original crops; keep the default filter. |
 | C | Reconnect the selected camera; cancel pending operations/creation. |
+| H | Toggle compact controls/gestures help; pause workspace actions while visible. |
+| Escape inside help | Close help and require hand release before resuming gestures. |
 | Escape during new-panel creation with existing panels | Cancel the draft and keep existing panels. |
 | Escape otherwise / Q / window close / Ctrl+C | Exit. Q always exits. |
 
@@ -179,11 +181,48 @@ pixels, even when frozen content visually covers a hand.
 
 Panels composite back-to-front on a fresh frame copy. Each LIVE source comes
 from raw input, never from a lower panel's composite. UI is drawn afterward.
-The HUD shows count, active ID, operation, and active LIVE/DELAYED/FROZEN mode. Toolbar
-rows are separate from the top HUD and bottom fist feedback.
-Text uses a single antialiased pass on solid dark surfaces for contrast, with
-long HUD labels truncated to fit instead of overlapping or shrinking indefinitely.
-The selected filter has a cyan border; unavailable actions are dimmed.
+The HUD shows count, active ID, manipulation state, mode, filter, and configured
+delay. Each panel has a compact ID/mode/filter tag clamped within the frame.
+The active panel has a thicker cyan border and is the only one with resize
+handles. Inactive panels use thin muted borders.
+
+`ui.py` owns shared layout rectangles, typography, colors, and drawing helpers.
+Toolbar drawing/hitboxes and the slider drawing/hitbox derive from that same
+layout. Dark translucent cards separate application status, delay adjustment,
+toolbar rows, and fist feedback; text uses one antialiased pass and truncates
+long labels to fit. Fist hold progress is highlighted. Selected controls have
+cyan borders and unavailable actions are dimmed.
+
+The layout targets 1280x720 and 640x480 raw frames, using larger buttons and
+spacing at the larger size. It never changes camera capture resolution, crop,
+or aspect ratio. Below 480 pixels wide or 360 pixels high, gesture controls
+and their hitboxes are hidden and a concise notice is shown. Keyboard shortcuts
+remain available under their usual idle/mode rules. Increasing the OpenCV
+window size alone does not change the underlying frame size.
+
+## Help overlay
+
+H opens a compact list of actual keyboard controls and gestures. While visible,
+only H/Escape (close) and Q (exit) act on the workspace. An existing camera
+recovery continues, and live capture, inference, and shared history sampling
+continue when the camera is available. All panel gestures, slider capture,
+toolbar actions, freezing, clear-all, and reconnect requests are gated.
+
+Opening help discards an unfinished creation draft and stops drag/resize at
+the latest valid geometry. It cancels delay capture and fist progress, while
+preserving committed panels, crops, temporal modes, configured delays, filters,
+and stacking. Closing help consumes that frame and requires both visible hands
+to release before gesture interaction resumes. Escape outside help retains its
+existing cancel-creation/exit behavior. `--no-tracking` stays a plain diagnostic
+preview and does not enable help or workspace controls.
+
+At very small sizes, help shows a concise size notice instead of overlapping
+rows. Synthetic previews are generated from synthetic pixels only into the
+Git-ignored `.tmp/ui-previews/` directory:
+
+```powershell
+.\.venv\Scripts\python.exe .\tests\ui_preview.py
+```
 
 | Filter button / key | Effect |
 | --- | --- |
@@ -239,8 +278,8 @@ hands. If a step coincides with pinched hands, those gestures are consumed and
 the existing both-release gate applies before further actions. Slider and key
 adjustment are disabled for LIVE/FROZEN panels, creation, dragging, resizing,
 release-to-rearm, and camera recovery. The slider is dimmed while temporarily
-disabled and hidden when the image is too short to fit it above the toolbar
-without covering the header; bracket keys remain available when idle.
+disabled and hidden together with the toolbar when the raw frame cannot fit
+gesture controls; bracket keys remain available when idle.
 
 ## Shared bounded video history
 
@@ -367,10 +406,15 @@ Adjustment tests cover slider mapping/rounding, fresh pinches, stable ownership,
 release/loss rearming, disabled states, keyboard steps, capture priority,
 independent offsets, freeze retention, recovery cancellation, and unchanged
 history image/frame budgets.
+Release UI checks cover shared drawing/hitbox geometry, bounded text and tags,
+small-frame keyboard access, translucent surfaces, modal input gating,
+cancellation, release-to-rearm, and live raw inference while help is visible.
+Older preview pixel assertions now sample away from the wider UI cards and
+panel tags; toolbar-overlap fixtures derive their points from the shared layout.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\delay_slider.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\delay_slider.py .\help_overlay.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
 ```
 
@@ -416,6 +460,14 @@ history image/frame budgets.
     Delete, T, F/fist, and bracket keys while adjusting; they must be blocked.
     Test R, C, Q, and Escape during capture. Confirm LIVE/FROZEN, manipulation,
     creation, and recovery disable adjustment, and plain `--no-tracking` stays plain.
+15. Open H during creation, dragging, resizing, a fist hold, and slider capture.
+    Verify drafts stop safely, committed panels/content remain, and workspace
+    keys/gestures do nothing while help is visible. Close with H and Escape;
+    held pinches must not act until both hands release. Q must always exit.
+16. Review labels, active/inactive borders, handles, buffering, fist progress,
+    and reconnect status at 1280x720 and 640x480. Check small raw frames show
+    the hidden-controls notice while keyboard alternatives still work. Synthetic
+    previews are a visual check, not evidence of live gesture usability.
 
 Live testing remains manual. The 2D pose heuristics and spatial hand association
 can miss poses or confuse IDs with occlusion, edge-on hands, or fast crossings.

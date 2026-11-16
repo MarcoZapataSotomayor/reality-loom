@@ -12,6 +12,7 @@ from freeze_control import FreezeController
 from interaction import Rectangle
 from panels import PanelCollection
 from temporal_history import MAX_FRAMES, MAX_IMAGE_BYTES, quantize_delay
+from ui import Layout
 from test_fist_gesture import pose_hand
 from test_panel_preview import add_panel, samples
 import test_frozen_content as preview_support
@@ -43,13 +44,14 @@ class SliderMappingTests(unittest.TestCase):
         self.assertEqual(quantize_delay(2.499999999999), 2.5)
 
     def test_layout_keeps_slider_caption_track_and_toolbar_apart(self):
-        for width, height in ((320, 360), (640, 360), (640, 480), (1280, 720)):
+        for width, height in ((640, 360), (640, 480), (1280, 720)):
             track = DelaySlider.track(width, height)
-            self.assertGreaterEqual(track.y - 30, 114)
-            caption_top = FilterToolbar.action_buttons(width, height)[0].top - 30
-            self.assertLess(track.y + 14, caption_top)
+            layout = Layout(width, height)
+            self.assertGreater(layout.slider.top, layout.header.bottom)
+            self.assertLess(layout.slider.bottom, layout.toolbar.top)
             self.assertTrue(0 < track.left < track.right < width)
         self.assertIsNone(DelaySlider.track(320, 240))
+        self.assertIsNone(DelaySlider.track(320, 360))
 
 
 class SliderCaptureTests(unittest.TestCase):
