@@ -166,6 +166,9 @@ Panels composite back-to-front on a fresh frame copy. Each LIVE source comes
 from raw input, never from a lower panel's composite. UI is drawn afterward.
 The HUD shows count, active ID, operation, and active LIVE/FROZEN state. Toolbar
 rows are separate from the top HUD and bottom fist feedback.
+Text uses a single antialiased pass on solid dark surfaces for contrast, with
+long HUD labels truncated to fit instead of overlapping or shrinking indefinitely.
+The selected filter has a cyan border; unavailable actions are dimmed.
 
 | Filter button / key | Effect |
 | --- | --- |

@@ -7,6 +7,7 @@ import time
 import cv2
 
 from camera_recovery import CameraReconnect
+from ui import ACCENT, MUTED, badge, surface, text
 
 
 WINDOW_TITLE = "Reality Loom"
@@ -86,12 +87,9 @@ class CameraDebugLogger:
 
 def draw_camera_status(frame, message, instructions):
     """Clearly label the last image while live capture is paused."""
-    for row, text in enumerate((message, instructions)):
-        position = (12, 32 + row * 26)
-        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    surface(frame, 0, 0, frame.shape[1] - 1, 78)
+    text(frame, message, (12, 30), frame.shape[1] - 24, 0.55, ACCENT)
+    text(frame, instructions, (12, 58), frame.shape[1] - 24, 0.42)
 
 
 def draw_rectangle_interaction(frame, interaction):
@@ -102,8 +100,7 @@ def draw_rectangle_interaction(frame, interaction):
         color = (255, 200, 0) if active_panel else (170, 170, 170)
         cv2.rectangle(frame, (round(box.left), round(box.top)),
                       (round(box.right), round(box.bottom)), color, 1, cv2.LINE_AA)
-        cv2.putText(frame, f"#{panel.panel_id}", (round(box.left) + 7, round(box.top) + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        badge(frame, f"#{panel.panel_id}", (round(box.left) + 7, round(box.top) + 14), color)
     rectangle = interaction.rectangle
     if rectangle is not None:
         color = (0, 255, 255) if interaction.state in ("CREATING", "RESIZING") else (255, 200, 0)
@@ -119,27 +116,21 @@ def draw_rectangle_interaction(frame, interaction):
                            CORNER_HANDLE_RADIUS_PIXELS, color, -1, cv2.LINE_AA)
     lines = [interaction.status_text]
     if rectangle is not None:
-        lines.append(f"Content: {interaction.content_mode} | F: toggle when placed")
+        lines.append(f"Content: {interaction.content_mode}   |   F: freeze / unfreeze")
+    else:
+        lines.append("N: new panel   |   C: reconnect   |   Q: exit")
     lines.append(interaction.instructions)
-    height, width = frame.shape[:2]
-    start_y, line_height = (60, 24) if height >= 360 else (50, 16)
-    for row, text in enumerate(lines):
-        position = (12, start_y + row * line_height)
-        base_scale = 0.55 if width >= 640 else 0.35
-        text_width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, base_scale, 1)[0][0]
-        scale = base_scale * min(1.0, (width - 24) / max(1, text_width))
-        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    scale, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    scale, (255, 255, 255), 1, cv2.LINE_AA)
+    width = frame.shape[1]
+    surface(frame, 0, 36, width - 1, 105)
+    for row, line in enumerate(lines):
+        text(frame, line, (12, 53 + row * 20), width - 24,
+             0.44 if width >= 640 else 0.36, ACCENT if row == 0 else MUTED)
 
 
 def draw_fist_feedback(frame, message):
-    position = (12, frame.shape[0] - 16)
-    cv2.putText(frame, message, position, cv2.FONT_HERSHEY_SIMPLEX,
-                0.55, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.putText(frame, message, position, cv2.FONT_HERSHEY_SIMPLEX,
-                0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    height, width = frame.shape[:2]
+    surface(frame, 0, height - 36, width - 1, height - 1)
+    text(frame, message, (12, height - 14), width - 24, 0.42, MUTED)
 
 
 def main():

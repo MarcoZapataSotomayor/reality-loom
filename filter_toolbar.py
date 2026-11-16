@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import cv2
 
 from filters import FILTER_NAMES
+from ui import ACCENT, MUTED, TEXT, surface, text
 
 
 TOOLBAR_MARGIN = 12
@@ -110,26 +111,25 @@ class FilterToolbar:
         height, width = display_frame.shape[:2]
         buttons = self.buttons(width, height)
         actions = self.action_buttons(width, height)
-        caption = f"Filter: {self.selected} | " + (context or ("pinch or keys 1-4" if enabled else "selection paused"))
+        caption = (context or "Panel filters") + ("  |  pinch / keys 1-4" if enabled else "  |  controls paused")
         position = (TOOLBAR_MARGIN, max(12, actions[0].top - 10))
-        cv2.putText(display_frame, caption, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(display_frame, caption, position, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        surface(display_frame, 4, max(0, actions[0].top - 30),
+                min(width - 1, buttons[-1].right + 3), buttons[0].bottom + 8)
+        text(display_frame, caption, position, min(width - 24, buttons[-1].right - TOOLBAR_MARGIN), 0.4, MUTED)
         labels = {"NEW": "N New panel", "DELETE": "Del Delete"}
         for index, button in enumerate(buttons + actions):
             selected = button.name == self.selected
             allowed = enabled and (can_new if button.name == "NEW" else can_delete if button.name == "DELETE" else True)
-            color = (70, 120, 40) if selected else (35, 35, 35) if allowed else (20, 20, 20)
+            color = (83, 67, 25) if selected else (53, 47, 42) if allowed else (33, 30, 28)
             cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom), color, -1)
             cv2.rectangle(display_frame, (button.left, button.top), (button.right, button.bottom),
-                          (255, 255, 255) if selected else (110, 110, 110), 1)
+                          ACCENT if selected else (94, 85, 74), 1)
             label = labels.get(button.name, f"{index + 1} {button.name}")
             text_width = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
             scale = 0.42 * min(1.0, (button.right - button.left - 8) / max(1, text_width))
-            cv2.putText(display_frame, label, (button.left + 4, button.top + 19),
-                        cv2.FONT_HERSHEY_SIMPLEX, max(0.1, scale),
-                        (255, 255, 255) if allowed else (130, 130, 130), 1, cv2.LINE_AA)
+            text(display_frame, label, (button.left + 4, button.top + 19),
+                 button.right - button.left - 8, max(0.1, scale),
+                 TEXT if allowed else (130, 130, 130))
         for hand in hands:
             point = (round(hand.pinch_point[0]), round(hand.pinch_point[1]))
             color = (0, 255, 255) if hand.is_pinching else (255, 255, 255)
