@@ -1,6 +1,7 @@
 """Up to four panel data records, operated by one shared gesture controller."""
 
 from dataclasses import dataclass, replace
+from collections import deque
 from time import monotonic
 
 import numpy as np
@@ -11,6 +12,14 @@ from ui import draw_buffering
 
 
 MAX_PANELS = 4
+
+
+@dataclass(frozen=True)
+class InteractionEvent:
+    kind: str
+    panel_id: int
+    start: tuple | None = None
+    end: tuple | None = None
 
 
 @dataclass
@@ -44,12 +53,18 @@ class PanelCollection:
         self.history = TemporalHistory()
         self._frame_time = 0.0
         self.adjusting_delay = False
+        self.events = deque(maxlen=16)  # Small action feed; contains no images.
         if self.controller.rectangle is not None and self.controller.state not in ("READY", "CREATING"):
             self._commit_creation()
 
     @property
     def active_panel(self):
         return next((panel for panel in self.panels if panel.panel_id == self.active_id), None)
+
+    def drain_events(self):
+        events = list(self.events)
+        self.events.clear()
+        return events
 
     @property
     def state(self):
@@ -160,7 +175,9 @@ class PanelCollection:
 
     @property
     def status_text(self):
-        target = "NEW" if self.creation_mode else f"ACTIVE #{self.active_id}"
+        target = "NO SELECTION" if self.active_id is None else f"ACTIVE #{self.active_id}"
+        if self.creation_mode:
+            target = "NEW"
         return f"Panels: {len(self.panels)}/{MAX_PANELS} | {target} | {self.tool} | {self.state.replace('_', ' ')}"
 
     @property
@@ -191,6 +208,7 @@ class PanelCollection:
         panel = Panel(self._next_id, self.rectangle, self.default_filter, self.controller.frozen_image)
         self._next_id += 1
         self.panels.append(panel)
+        self.events.append(InteractionEvent("PLACED", panel.panel_id))
         self.active_id = panel.panel_id
         self.creation_mode = False
         self.tool = "SELECT"
@@ -363,6 +381,8 @@ class PanelCollection:
             return
 
         if not self.controller.can_start_manipulation:
+            old_state = self.state
+            edit_start = self._edit_start
             was_editing = self.state in ("DRAGGING", "RESIZING")
             lost = ((self.state == "DRAGGING" and self.controller._drag_hand_id not in self._pinches)
                     or (self.state == "RESIZING" and not self.controller._resize_hands.keys() <= self._pinches.keys()))
@@ -371,6 +391,11 @@ class PanelCollection:
             elif self.state != "READY":
                 self.controller.update(hands, frame_width, frame_height)
             self._store_active()
+            if (old_state == "DRAGGING" and self.state == "PLACED" and not lost
+                    and edit_start is not None and self.active_panel is not None):
+                self.events.append(InteractionEvent(
+                    "DRAG_COMPLETED", self.active_id, (edit_start.left, edit_start.top),
+                    (self.rectangle.left, self.rectangle.top)))
             if was_editing and self.state not in ("DRAGGING", "RESIZING"):
                 self._edit_start = None
                 self.notice = ""
@@ -436,6 +461,8 @@ class PanelCollection:
         else:
             changed = self.controller.toggle_frozen(raw_frame)
         self._store_active()
+        if changed:
+            self.events.append(InteractionEvent(self.content_mode, panel.panel_id))
         if changed and self.notice.startswith("Buffering..."):
             self.notice = ""
         return changed

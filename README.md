@@ -72,6 +72,52 @@ The application never switches indices automatically.
 `--no-tracking` is a plain camera diagnostic preview: no model, panels, toolbar,
 history buffer, or gesture imports. C and the exit controls remain available.
 
+## Optional first-panel tutorial
+
+An empty workspace starts with a compact **Create with your hands** card over
+the usual bottom controls area. Freshly pinch **Start tutorial** or press **U**,
+or choose **Free play** / **G**. Existing workspace keyboard shortcuts such as
+N also dismiss the card into free play for experienced users. The camera stays
+visible and live throughout. Nothing about this choice is persisted: the card
+appears once per session and does not reopen after R, skipping, or completion.
+
+The tutorial observes real workspace events and teaches three actions:
+
+1. **Create:** the normal CREATE tool is prepared behind its release gate. Two
+   static corner guides suggest a region; the actual rectangle preview follows
+   the existing two-hand creation geometry. Only successful placement advances.
+2. **Move:** the normal MOVE tool activates after release. Pinch inside the
+   created panel, drag it, then release. Final displacement must be at least
+   `TUTORIAL_MOVE_MIN_FRAME_FRACTION = 0.05` of the raw frame diagonal (40 pixels
+   at 640x480, about 73 pixels at 1280x720). Merely starting a drag, moving too
+   little, losing the controller, or canceling does not advance the step.
+3. **Freeze:** return to SELECT, release, then activate the visible **Freeze**
+   action or press **F**. Only a successful source-aware freeze completes the
+   tutorial. Brief success feedback appears, the panel remains frozen in place,
+   and normal free-play controls return after release.
+
+Only step-relevant controls and an always-visible **Skip / G** action are shown.
+Skipping preserves committed geometry/content, discards a draft or stops an
+unfinished edit safely, and requires release before free-play gestures resume.
+Fist activation and unrelated tool/filter/time/delete/clear actions are paused
+during the tutorial; step 3 teaches the visible Freeze action and F alternative.
+Every transition uses existing release gates, manipulation, and content logic.
+The small action feed is bounded to 16 events and stores no images.
+
+H pauses progression and safely cancels unfinished gestures. Close help to
+resume the current step after release. Help includes a **Tutorial / U** entry
+to start again, plus **Skip / G** while a tutorial is active. If any panels
+already exist, starting explains the empty-workspace requirement and preserves
+them. To replay, skip/finish, close help, clear with R in free play, then use
+H → Tutorial or U. There are no automatic deletions or replacements.
+
+Q still exits and C still reconnects, including from tutorial help. Recovery
+cannot complete a drag or freeze step. A retained tutorial panel resumes its
+step after release; if a size change clears it, guidance returns to Create.
+Escape retains the existing edit/creation/exit semantics; use G to leave the
+tutorial without exiting. `--no-tracking` never initializes or displays the
+welcome card, tutorial, or tutorial controls.
+
 ## Controls
 
 The preview must have keyboard focus. The top toolbar row selects a tool; the
@@ -92,6 +138,8 @@ second row contains actions for the active panel. Dim controls are unavailable.
 | Delete / Delete button | Delete only the active panel. |
 | R | Clear all panels and frozen crops while idle, keeping the default filter and increasing session IDs. |
 | H | Toggle compact help. Gestures and workspace keys pause while it is visible. |
+| U / Tutorial | Start/replay the optional tutorial with an empty workspace; also available in help. |
+| G / Skip or Free play | Dismiss the welcome card or safely leave an active tutorial. |
 | D | Toggle landmark skeletons and per-hand debug labels; initially hidden. |
 | C | Cancel pending work and reconnect the same selected camera. |
 | Q / window close / Ctrl+C | Exit. Q always exits, including during help or an operation. |
@@ -190,8 +238,10 @@ Landmark skeletons and per-hand debug labels are hidden by default; D toggles
 these independently of `--debug-camera`, which only logs raw camera statistics.
 The tracker always runs on current raw live frames, even with debug overlays off.
 
-H opens a compact list of actual controls. Only H/Escape (close) and Q (exit)
-act on the workspace while help is visible. Live inference and bounded history
+H opens a compact list of actual controls. H/Escape close it, Q exits, and the
+Tutorial entry/U can start guidance. G can skip active guidance; C stays available
+while the welcome card/tutorial is showing. Other workspace actions pause.
+Live inference and bounded history
 sampling continue when capture is available; existing recovery also continues.
 Help discards drafts, cancels slider/fist progress, and stops edits at their last
 valid geometry. Committed panels, crops, modes, filters, delay values, and stacking
@@ -268,22 +318,32 @@ workspace tests explicitly choose CREATE/MOVE/RESIZE and open contextual menus
 when their gesture controls are needed. Tests cover ownership, priorities,
 release gates, Escape rollback, UI consumption, overlay toggling, source-aware
 freezing, panel stacking, irregular timestamps, budgets, recovery, and help.
+Tutorial checks cover real-event progression, meaningful completed movement,
+failed actions, fresh-pinch entry, skip/release gates, paused help, recovery,
+preserved panels, clean raw inference/capture, and plain diagnostic mode.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\interaction.py .\filter_toolbar.py .\delay_slider.py .\ui.py .\help_overlay.py .\freeze_control.py .\hand_tracking.py .\gestures.py .\filters.py .\temporal_history.py .\camera_recovery.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\interaction.py .\filter_toolbar.py .\delay_slider.py .\ui.py .\help_overlay.py .\tutorial.py .\freeze_control.py .\hand_tracking.py .\gestures.py .\filters.py .\temporal_history.py .\camera_recovery.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
 .\.venv\Scripts\python.exe .\tests\ui_preview.py
 git diff --check
 ```
 
 Synthetic previews use synthetic pixels only, saved into the Git-ignored
-`.tmp/ui-previews/` directory at 1280x720 and 640x480. They do not demonstrate
+`.tmp/ui-previews/` directory at 1280x720 and 640x480, including welcome, each
+tutorial step, the actual creation preview, tutorial help, and completion. They do not demonstrate
 live gesture usability or performance.
 
 ## Manual walkthrough and limitations
 
-1. Start in SELECT. Choose New/N, release both hands, create with two pinches,
+First try U from the welcome card: create, release, drag visibly and release,
+then Freeze. Try a tiny drag, hand loss, and help; none should falsely advance.
+Repeat and use G while creating/moving. Committed panels must survive. Check
+C, Q, and replay refusal with existing panels; after G/completion and R, the
+welcome card must stay dismissed. Then continue in free play:
+
+1. Choose G or use N from the welcome card. Choose New/N, release both hands, create with two pinches,
    then release. Confirm SELECT returns and the new panel is active.
 2. Create another overlapping panel. Freshly pinch to select the topmost or an
    exposed lower region; neither should move. Choose Move/M, release, then drag

@@ -205,7 +205,7 @@ class FrozenPreviewTests(unittest.TestCase):
 
                 def guard(name, *args, **kwargs):
                     if name in ("hand_tracking", "gestures", "interaction", "freeze_control",
-                                "filter_toolbar", "delay_slider", "help_overlay", "filters", "panels", "temporal_history", "mediapipe"):
+                                "filter_toolbar", "delay_slider", "help_overlay", "tutorial", "filters", "panels", "temporal_history", "mediapipe"):
                         raise AssertionError(f"Unexpected tracking import: {name}")
                     return original_import(name, *args, **kwargs)
 
@@ -483,7 +483,8 @@ class FrozenPreviewTests(unittest.TestCase):
         self.preview(interaction, [frame(), frame(), frame()], [-1, -1, ord("q")],
                      gesture_frames=[released, pressed, pressed], toolbar=toolbar)
         self.assertEqual(toolbar.selected, "ORIGINAL")
-        self.assertEqual(interaction.state, "READY")
+        # The fresh pinch chooses the welcome card, which requires release.
+        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
         self.assertIsNone(interaction.rectangle)
 
     def test_freezing_with_an_effect_saves_raw_color_and_original_restores_it(self):

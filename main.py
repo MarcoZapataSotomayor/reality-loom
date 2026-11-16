@@ -122,6 +122,7 @@ def main():
             from filter_toolbar import FilterToolbar
             from delay_slider import DelaySlider
             from help_overlay import HelpOverlay
+            from tutorial import Tutorial
 
             # Check the model before opening the camera.
             tracker = HandTracker()
@@ -131,6 +132,7 @@ def main():
             toolbar = FilterToolbar()
             slider = DelaySlider()
             help_overlay = HelpOverlay()
+            tutorial = Tutorial(interaction)
             debug_overlays = False
         camera, frame = open_camera(args.camera)
         if camera is None:
@@ -150,6 +152,7 @@ def main():
             print("Select a panel filter with the toolbar or keys 1-4 while idle / placed.")
             print("H: controls and gestures help (pauses gesture actions).")
             print("D: toggle landmark skeletons and hand debug labels.")
+            print("U: tutorial (empty workspace) | G: skip tutorial / free play")
         debug_logger = CameraDebugLogger()
         camera_error = None
 
@@ -161,6 +164,7 @@ def main():
             slider_consumed = False
             freeze_requested = False
             reset_blocked = False
+            tutorial_consumed = False
             active = recovery is None and camera_error is None
             if active:
                 if args.debug_camera:
@@ -180,6 +184,15 @@ def main():
             help_consumed = False
             if tracker is not None:
                 help_consumed = help_overlay.handle_key(key, interaction, slider, toolbar, freeze_control)
+                if active and not help_consumed:
+                    tutorial.ensure_tool(interaction)
+                tutorial_action = tutorial.handle_input(
+                    key, hand_gestures, interaction, help_overlay, frame.shape[1], frame.shape[0], active)
+                tutorial_consumed = tutorial_action is not None
+                if tutorial_consumed:
+                    toolbar.disable()
+                    slider.cancel(interaction)
+                    freeze_control.reset()
                 if not help_consumed and key in (ord("d"), ord("D")):
                     debug_overlays = not debug_overlays
                 if key == 27 and help_consumed:
@@ -198,8 +211,10 @@ def main():
                     control_key = False
                 slider_consumed = slider.update(
                     toolbar.panel_hands(hand_gestures), frame.shape[1], frame.shape[0],
-                    interaction, active and not help_consumed and not control_key, key)
+                    interaction, active and not help_consumed and not tutorial.showing_card
+                    and not tutorial_consumed and not control_key, key)
                 can_select = (active and not help_consumed and not control_key
+                              and not tutorial.showing_card and not tutorial_consumed
                               and not slider_consumed and interaction.toolbar_enabled)
                 selection_consumed = toolbar.update(
                     hand_gestures, frame.shape[1], frame.shape[0], can_select, key, interaction,
@@ -216,6 +231,11 @@ def main():
                 if tracker is not None:
                     if help_consumed:
                         interaction.observe_pinches(hand_gestures)
+                    elif tutorial_consumed:
+                        interaction.observe_pinches(hand_gestures)
+                        freeze_requested = tutorial_action == "FREEZE"
+                        if freeze_requested:
+                            freeze_control.update([], interaction)
                     elif slider_consumed:
                         interaction.observe_pinches(hand_gestures)
                         toolbar.disable()
@@ -230,36 +250,47 @@ def main():
                     elif escape_canceled:
                         interaction.observe_pinches(hand_gestures)
                     else:
-                        panel_hands = toolbar.panel_hands(hand_gestures)
-                        interaction.update(panel_hands, frame.shape[1], frame.shape[0])
-                        freeze_control.update(panel_hands, interaction)
+                        panel_hands = tutorial.panel_hands(toolbar.panel_hands(hand_gestures))
+                        if tutorial.state != "FREEZE" or interaction.state == "WAITING_FOR_RELEASE":
+                            interaction.update(panel_hands, frame.shape[1], frame.shape[0])
+                        else:
+                            interaction.observe_pinches(panel_hands)
+                        if tutorial.active:
+                            freeze_control.reset()
+                        else:
+                            freeze_control.update(panel_hands, interaction)
                     if not interaction.toolbar_enabled:
                         toolbar.disable()
                     interaction.composite(frame, preview_frame)
                     # Draw every overlay above the composite, never into the raw frame.
                     if debug_overlays:
                         draw_hand_landmarks(preview_frame, result, hand_gestures)
-                    targets = toolbar.visible_buttons(frame.shape[1], frame.shape[0], interaction)
+                    targets = (tutorial.targets(frame.shape[1], frame.shape[0]) if tutorial.showing_card else
+                               toolbar.visible_buttons(frame.shape[1], frame.shape[0], interaction))
                     draw_rectangle_interaction(preview_frame, interaction, len(result.hand_landmarks),
-                                               hand_gestures, active and not help_consumed, targets)
+                                               hand_gestures, active and not help_consumed, targets,
+                                               tutorial.instruction_override(interaction))
                     if interaction.rectangle is not None:
                         draw_fist_feedback(preview_frame, freeze_control.message)
             if tracker is not None:
                 toolbar.selected = interaction.selected_filter
-                toolbar.draw(preview_frame, hand_gestures,
-                             active and not help_consumed and interaction.toolbar_enabled,
-                             interaction.can_new, interaction.can_delete,
-                             "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}",
-                             can_delay=interaction.can_delay, delayed=interaction.content_mode == "DELAYED",
-                             interaction=interaction)
-                slider.draw(preview_frame, interaction,
-                            active and not help_consumed and (interaction.can_adjust_delay or interaction.adjusting_delay))
+                if not tutorial.showing_card:
+                    toolbar.draw(preview_frame, hand_gestures,
+                                 active and not help_consumed and interaction.toolbar_enabled,
+                                 interaction.can_new, interaction.can_delete,
+                                 "default for new panels" if interaction.creation_mode else f"active panel #{interaction.active_id}",
+                                 can_delay=interaction.can_delay, delayed=interaction.content_mode == "DELAYED",
+                                 interaction=interaction)
+                    slider.draw(preview_frame, interaction,
+                                active and not help_consumed and (interaction.can_adjust_delay or interaction.adjusting_delay))
+                tutorial.draw(preview_frame, interaction, hand_gestures, active)
                 toolbar.draw_pointers(preview_frame, hand_gestures)
-                help_overlay.draw(preview_frame)
+                help_overlay.draw(preview_frame, tutorial.active, hand_gestures)
             cv2.imshow(WINDOW_TITLE, preview_frame)
             if key in (ord("q"), ord("Q")) or (key == 27 and not escape_canceled):
                 break
             if (tracker is not None and active and not help_consumed and not reset_blocked
+                    and not tutorial.showing_card and not tutorial_consumed
                     and key in (ord("r"), ord("R"))):
                 interaction.reset()
                 freeze_control.reset()
@@ -271,9 +302,11 @@ def main():
             except cv2.error:
                 break
 
-            if not help_consumed and key in (ord("c"), ord("C")) and recovery is None:
+            if ((not help_consumed or tracker is not None and tutorial.showing_card)
+                    and key in (ord("c"), ord("C")) and recovery is None):
                 previous_frame_size = (frame.shape[1], frame.shape[0])
                 if tracker is not None:
+                    tutorial.on_recovery(interaction)
                     pinch_detector.reset()
                     interaction.prepare_camera_reconnect()
                     freeze_control.reset()
@@ -299,6 +332,7 @@ def main():
                             interaction.finish_camera_reconnect(
                                 previous_frame_size, (frame.shape[1], frame.shape[0])
                             )
+                            tutorial.on_recovery(interaction)
                         debug_logger = CameraDebugLogger()
                         print("Camera reconnected. Show both hands OPEN to resume gestures."
                               if tracker is not None else "Camera reconnected.")
@@ -308,10 +342,14 @@ def main():
                 continue
 
             if (tracker is not None and not help_consumed and not slider_consumed
-                    and (not selection_consumed or freeze_requested) and not escape_canceled):
+                    and (not selection_consumed or freeze_requested) and not escape_canceled
+                    and (not tutorial_consumed or freeze_requested)
+                    and (not tutorial.active or freeze_requested)):
                 # Keyboard and fist requests share one raw-image action. C/R and
                 # exit checks above cancel pending requests before this point.
                 freeze_control.apply(interaction, frame, keyboard=freeze_requested or key in (ord("f"), ord("F")))
+            if tracker is not None:
+                tutorial.observe(interaction, (frame.shape[1], frame.shape[0]), paused=help_consumed)
 
             try:
                 success, next_frame = camera.read()

@@ -16,6 +16,69 @@ from help_overlay import HelpOverlay
 from interaction import Rectangle
 from panels import Panel, PanelCollection
 from ui import draw_camera_status, draw_fist_feedback, draw_workspace
+from ui import Layout
+from tutorial import Tutorial
+
+
+def render_tutorial(width, height):
+    """Drive the same actions as the app; guides are not simulated hand tracking."""
+    raw = np.full((height, width, 3), (150, 180, 190), np.uint8)
+    cv2.line(raw, (0, height // 2), (width - 1, height // 2), (165, 195, 205), 2)
+    scene = PanelCollection()
+    tutorial = Tutorial(scene)
+    toolbar = FilterToolbar()
+    output = {}
+    first, second = Layout(width, height).tutorial_corners
+
+    def hands(pinching=False, a=first, b=second):
+        return [SimpleNamespace(track_id=index + 1, pinch_point=point, is_pinching=pinching)
+                for index, point in enumerate((a, b))]
+
+    def tick(poses):
+        tutorial.ensure_tool(scene)
+        scene.update(poses, width, height)
+        tutorial.observe(scene, (width, height), now=1)
+
+    def snapshot(name):
+        display = raw.copy()
+        scene.composite(raw, display)
+        draw_workspace(display, scene, instruction=tutorial.instruction_override(scene))
+        if not tutorial.showing_card:
+            toolbar.draw(display, [], scene.toolbar_enabled, interaction=scene)
+        tutorial.draw(display, scene)
+        output[name] = display
+
+    snapshot("welcome")
+    tutorial.start(scene)
+    for _ in range(4):
+        tick(hands())
+    snapshot("tutorial-create")
+    tick(hands(True))
+    snapshot("tutorial-create-preview")
+    tick(hands())
+    for _ in range(4):
+        tick(hands())
+    snapshot("tutorial-move")
+    center = ((first[0] + second[0]) / 2, (first[1] + second[1]) / 2)
+    other = (width * 0.9, height * 0.3)
+    tick(hands(False, center, other))
+    tick(hands(True, center, other))
+    moved = (center[0] + width * 0.12, center[1])
+    for _ in range(6):
+        tick(hands(True, moved, other))
+    tick(hands(False, moved, other))
+    for _ in range(4):
+        tick(hands())
+    snapshot("tutorial-freeze")
+    help_image = output["tutorial-freeze"].copy()
+    help_overlay = HelpOverlay()
+    help_overlay.visible = True
+    help_overlay.draw(help_image, tutorial_active=True)
+    output["tutorial-help"] = help_image
+    scene.toggle_frozen(raw)
+    tutorial.observe(scene, (width, height), now=1)
+    snapshot("tutorial-complete")
+    return output
 
 
 def render(width, height):
@@ -81,7 +144,9 @@ if __name__ == "__main__":
     output = ROOT / ".tmp" / "ui-previews"
     output.mkdir(parents=True, exist_ok=True)
     for width, height in ((1280, 720), (640, 480)):
-        for name, image in render(width, height).items():
+        previews = render(width, height)
+        previews.update(render_tutorial(width, height))
+        for name, image in previews.items():
             path = output / f"{width}x{height}-{name}.png"
             if not cv2.imwrite(str(path), image):
                 raise RuntimeError(f"Could not write {path}")

@@ -81,6 +81,25 @@ class Layout:
         return (self.delay_toggle.right + 2 * self.gap, box.right - self.gap,
                 box.bottom - round(14 * self.scale))
 
+    @property
+    def tutorial_buttons(self):
+        if not self.context:
+            return {}
+        first, second, third, fourth = self.context
+        return {"START": Box(first.left, first.top, second.right, second.bottom),
+                "FREE": Box(third.left, third.top, fourth.right, fourth.bottom),
+                "SKIP": fourth, "FREEZE": first}
+
+    @property
+    def tutorial_corners(self):
+        if self.toolbar is None:
+            return None
+        top = self.header.bottom + self.gap
+        bottom = self.toolbar.top - self.gap
+        span = bottom - top
+        return ((round(self.width * 0.3), round(top + span * 0.2)),
+                (round(self.width * 0.7), round(top + span * 0.8)))
+
 
 def surface(frame, left, top, right, bottom, color=BACKGROUND, opacity=0.88):
     """Blend only the clipped UI region; never modify raw capture sources."""
@@ -97,6 +116,16 @@ def surface(frame, left, top, right, bottom, color=BACKGROUND, opacity=0.88):
 
 def card(frame, box):
     surface(frame, box.left, box.top, box.right, box.bottom)
+
+
+def draw_button(frame, box, label, enabled=True, hovered=False, scale=1.0):
+    color = (75, 65, 50) if enabled and hovered else (53, 47, 42) if enabled else (33, 30, 28)
+    surface(frame, box.left, box.top, box.right, box.bottom, color, 0.92)
+    cv2.rectangle(frame, (box.left, box.top), (box.right, box.bottom), ACCENT if hovered and enabled else MUTED, 1)
+    label_width = cv2.getTextSize(label, FONT, 0.45 * scale, 1)[0][0]
+    font_scale = 0.45 * scale * min(1.0, (box.width - 16) / max(1, label_width))
+    y = box.top + (box.bottom - box.top) // 2 + round(5 * scale)
+    text(frame, label, (box.left + 8, y), box.width - 16, font_scale, TEXT if enabled else MUTED)
 
 
 def text(frame, value, position, width, scale=0.45, color=TEXT):
@@ -140,7 +169,7 @@ def draw_camera_status(frame, message, instructions):
     text(frame, instructions, (x, layout.header.top + 54), layout.header.width - 16, 0.42)
 
 
-def draw_workspace(frame, interaction, hand_count=0, hands=(), enabled=True, ui_targets=()):
+def draw_workspace(frame, interaction, hand_count=0, hands=(), enabled=True, ui_targets=(), instruction=None):
     """Panel feedback and application status, separate from interactive controls."""
     height, width = frame.shape[:2]
     layout = Layout(width, height)
@@ -195,10 +224,13 @@ def draw_workspace(frame, interaction, hand_count=0, hands=(), enabled=True, ui_
               f"Panels: {len(interaction.panels)}/4 | ACTIVE #{interaction.active_id} | {interaction.tool} | {state}")
     text(frame, status, (x, top + round(42 * scale)), line_width, 0.44 * scale)
     panel = interaction.active_panel
-    content = (f"Content: {interaction.content_mode}   |   Delay: {panel.delay_seconds:.1f} s   |   {panel.filter_name}"
-               if panel is not None and not interaction.creation_mode else "New panel: two pinches to create")
+    if panel is not None and not interaction.creation_mode:
+        content = f"Content: {interaction.content_mode}   |   Delay: {panel.delay_seconds:.1f} s   |   {panel.filter_name}"
+    else:
+        content = "New panel: two pinches to create" if interaction.creation_mode else "No panel selected"
     text(frame, content, (x, top + round(62 * scale)), line_width, 0.44 * scale, ACCENT)
-    text(frame, interaction.instructions, (x, top + round(82 * scale)), line_width, 0.4 * scale, MUTED)
+    text(frame, interaction.instructions if instruction is None else instruction,
+         (x, top + round(82 * scale)), line_width, 0.4 * scale, MUTED)
     if layout.toolbar is None:
         box = Box(layout.margin, layout.header.bottom + 8, width - layout.margin - 1,
                   min(height - 1, layout.header.bottom + 58))
