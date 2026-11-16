@@ -44,6 +44,8 @@ class Layout:
         self.footer = Box(m, max(0, height - m - round(32 * self.scale)), width - m - 1, height - m - 1)
         self.filters = []
         self.actions = []
+        self.tools = []
+        self.context = []
         self.toolbar = None
         self.slider = None
         # Hiding targets also removes their hitboxes; keyboard shortcuts remain.
@@ -58,21 +60,26 @@ class Layout:
         self.toolbar = Box(m, top, right, bottom)
         action_top = top + caption_height + g
         filter_top = action_top + button_height + g
-        self.actions = [Box(m + i * (button_width + g), action_top,
+        self.tools = [Box(m + i * (button_width + g), action_top,
                             m + i * (button_width + g) + button_width, action_top + button_height)
-                        for i in range(3)]
-        self.filters = [Box(m + i * (button_width + g), filter_top,
+                        for i in range(4)]
+        self.context = [Box(m + i * (button_width + g), filter_top,
                             m + i * (button_width + g) + button_width, filter_top + button_height)
                         for i in range(4)]
         slider_bottom = top - g
         self.slider = Box(m, slider_bottom - round(52 * self.scale), right, slider_bottom)
+        menu_top = self.slider.top + g
+        self.filters = [Box(box.left, menu_top, box.right, menu_top + button_height) for box in self.context]
+        self.delay_toggle = self.filters[0]
+        self.actions = [self.tools[3], self.context[3], self.delay_toggle]
 
     @property
     def slider_track(self):
         if self.slider is None:
             return None
         box = self.slider
-        return (box.left + self.gap, box.right - self.gap, box.bottom - round(14 * self.scale))
+        return (self.delay_toggle.right + 2 * self.gap, box.right - self.gap,
+                box.bottom - round(14 * self.scale))
 
 
 def surface(frame, left, top, right, bottom, color=BACKGROUND, opacity=0.88):
@@ -133,14 +140,23 @@ def draw_camera_status(frame, message, instructions):
     text(frame, instructions, (x, layout.header.top + 54), layout.header.width - 16, 0.42)
 
 
-def draw_workspace(frame, interaction, hand_count=0):
+def draw_workspace(frame, interaction, hand_count=0, hands=(), enabled=True, ui_targets=()):
     """Panel feedback and application status, separate from interactive controls."""
     height, width = frame.shape[:2]
     layout = Layout(width, height)
+    hovered = []
+    if enabled:
+        for hand in hands:
+            if not hand.is_pinching and not any(box.contains(hand.pinch_point) for box in ui_targets):
+                target = interaction.hover_target(hand.pinch_point)
+                if target is not None:
+                    hovered.append(target)
     for panel in interaction.panels:
         box = panel.rectangle
         active = panel.panel_id == interaction.active_id and not interaction.creation_mode
         color = ACCENT if active else MUTED
+        if (panel.panel_id, None) in hovered:
+            color = (110, 240, 200)
         cv2.rectangle(frame, (round(box.left), round(box.top)), (round(box.right), round(box.bottom)),
                       color, 3 if active else 1, cv2.LINE_AA)
         badge(frame, f"#{panel.panel_id} {panel.content_mode} / {panel.filter_name}",
@@ -151,9 +167,13 @@ def draw_workspace(frame, interaction, hand_count=0):
         if interaction.creation_mode:
             cv2.rectangle(frame, (round(rectangle.left), round(rectangle.top)),
                           (round(rectangle.right), round(rectangle.bottom)), color, 2, cv2.LINE_AA)
-        elif interaction.state in ("PLACED", "DRAGGING", "RESIZING"):
-            for point in rectangle.corner_points().values():
-                cv2.circle(frame, (round(point[0]), round(point[1])), 4, color, -1, cv2.LINE_AA)
+        elif interaction.tool == "RESIZE":
+            if not enabled or not interaction.toolbar_enabled or interaction.submenu:
+                color = MUTED
+            for name, point in rectangle.corner_points().items():
+                highlight = (interaction.active_id, name) in hovered
+                cv2.circle(frame, (round(point[0]), round(point[1])), 7 if highlight else 4,
+                           (110, 240, 200) if highlight else color, -1, cv2.LINE_AA)
     if height < 220 or width < 300:
         surface(frame, 0, 0, width - 1, min(height - 1, 62))
         text(frame, "Controls hidden: frame too small.", (8, 20), width - 16, 0.3)
@@ -171,7 +191,8 @@ def draw_workspace(frame, interaction, hand_count=0):
              top + round(21 * scale)), round(150 * scale), 0.4 * scale, MUTED)
     state = "ADJUSTING DELAY" if interaction.adjusting_delay else interaction.state.replace("_", " ")
     # Keep status wording stable while temporal mode stays on its own line.
-    status = interaction.status_text if not interaction.adjusting_delay else f"Panels: {len(interaction.panels)}/4 | {state}"
+    status = (interaction.status_text if not interaction.adjusting_delay else
+              f"Panels: {len(interaction.panels)}/4 | ACTIVE #{interaction.active_id} | {interaction.tool} | {state}")
     text(frame, status, (x, top + round(42 * scale)), line_width, 0.44 * scale)
     panel = interaction.active_panel
     content = (f"Content: {interaction.content_mode}   |   Delay: {panel.delay_seconds:.1f} s   |   {panel.filter_name}"
@@ -187,6 +208,8 @@ def draw_workspace(frame, interaction, hand_count=0):
 
 
 def draw_fist_feedback(frame, message):
+    if not (message.startswith("Fist hold:") or "activated" in message):
+        return
     if frame.shape[0] < 220 or frame.shape[1] < 300:
         return
     layout = Layout(frame.shape[1], frame.shape[0])

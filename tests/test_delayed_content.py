@@ -162,6 +162,8 @@ class DelayedPanelTests(unittest.TestCase):
         self.assertFalse(self.scene.apply_action("DELAY"))
         self.assertFalse(self.scene.toggle_frozen(frame()))
         self.release()
+        self.scene.switch_tool("RESIZE")
+        self.release()
         self.scene.update(samples(True), 640, 480)
         self.assertEqual(self.scene.state, "RESIZING")
         self.assertFalse(self.scene.apply_action("DELAY"))
@@ -194,6 +196,7 @@ class DelayedPreviewTests(unittest.TestCase):
         point = ((button.left + button.right) / 2, (button.top + button.bottom) / 2)
         panel.rectangle = Rectangle(*point, 550, 470)
         scene.controller.rectangle = panel.rectangle
+        scene.submenu = "TIME"
         opened = samples(False, point, (550, 470))
         held = samples(True, point, (550, 470))
         preview_support.FrozenPreviewTests().preview(scene, [frame()] * 3, [-1, -1, ord("q")],
@@ -208,6 +211,8 @@ class DelayedPreviewTests(unittest.TestCase):
         preview_support.FrozenPreviewTests().preview(scene, [frame()] * 3, [ord("T"), -1, ord("q")],
                                     gesture_frames=[samples()] * 3)
         self.assertEqual(panel.content_mode, "DELAYED")
+        scene.switch_tool("RESIZE")
+        scene.update(samples(), 640, 480)
         scene.update(samples(True), 640, 480)
         self.assertEqual(scene.state, "RESIZING")
         preview_support.FrozenPreviewTests().preview(scene, [frame()] * 2, [ord("t"), ord("q")],

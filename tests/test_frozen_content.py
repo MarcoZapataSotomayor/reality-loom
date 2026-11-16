@@ -235,15 +235,15 @@ class FrozenPreviewTests(unittest.TestCase):
             display[125, 105] = marker
 
         inputs, shown, labels = self.preview(
-            interaction, [first, second], [ord("f"), ord("q")], draw_hands=draw_hands,
+            interaction, [first, first, second], [ord("d"), ord("f"), ord("q")], draw_hands=draw_hands,
         )
         # The captured border and landmark pixels must still be original raw BGR.
         np.testing.assert_array_equal(interaction.frozen_image, first[120:280, 100:300])
         np.testing.assert_array_equal(inputs[0], first)
-        np.testing.assert_array_equal(inputs[1], second)
-        np.testing.assert_array_equal(shown[1][180, 180], first[180, 180])
-        np.testing.assert_array_equal(shown[1][125, 105], marker)
-        np.testing.assert_array_equal(shown[1][220, 600], second[220, 600])
+        np.testing.assert_array_equal(inputs[2], second)
+        np.testing.assert_array_equal(shown[2][180, 180], first[180, 180])
+        np.testing.assert_array_equal(shown[2][125, 105], marker)
+        np.testing.assert_array_equal(shown[2][220, 600], second[220, 600])
         self.assertTrue(any(text.startswith("Content: LIVE") for text in labels))
         self.assertTrue(any(text.startswith("Content: FROZEN") for text in labels))
         np.testing.assert_array_equal(first, frame())
@@ -340,18 +340,22 @@ class FrozenPreviewTests(unittest.TestCase):
         first, second = frame(), frame((60, 70, 80))
         interaction.toggle_frozen(first)
         original = interaction.frozen_image
+        from panels import PanelCollection
+        scene = PanelCollection(interaction)
+        scene.tool = "RESIZE"
+        scene.observe_pinches([hand(1, (100, 120)), hand(2, (300, 280))])
         gestures = [[hand(1, (100, 120), True), hand(2, (300, 280), True)],
                     [hand(1, (80, 100), True), hand(2, (400, 350), True)]]
         inputs, shown, labels = self.preview(
-            interaction, [first, second], [ord("F"), ord("q")], gesture_frames=gestures,
+            scene, [first, second], [ord("F"), ord("q")], gesture_frames=gestures,
         )
         self.assertEqual(interaction.state, "RESIZING")
         self.assertEqual(interaction.content_mode, "FROZEN")
         self.assertIs(interaction.frozen_image, original)
         self.assertTrue(any(label.startswith("Panels: 1/4") and "RESIZING" in label for label in labels))
         self.assertTrue(any(text.startswith("Content: FROZEN") for text in labels))
-        # A filled handle extends into this pixel, beyond the thin border.
-        np.testing.assert_array_equal(shown[0][122, 102], (0, 255, 255))
+        # The pinching pointer stays visible above its active handle and content.
+        np.testing.assert_array_equal(shown[0][122, 102], (0, 220, 255))
         np.testing.assert_array_equal(original, first[120:280, 100:300])
         np.testing.assert_array_equal(inputs[1], second)
         left, top = round(interaction.rectangle.left), round(interaction.rectangle.top)
@@ -368,6 +372,10 @@ class FrozenPreviewTests(unittest.TestCase):
         button = toolbar.buttons(WIDTH, HEIGHT)[1]
         interaction.rectangle = Rectangle(button.left, button.top, 400, 470)
         original_box = interaction.rectangle
+        from panels import PanelCollection
+        scene = PanelCollection(interaction)
+        scene.tool = "RESIZE"
+        scene.submenu = "EFFECTS"
         # This button point is also within the top-left corner's resize hit radius.
         first, second = (button.left + 10, button.top + 10), (400, 470)
         gestures = [[pose_hand("open", 1, first), pose_hand("open", 2, second)],
@@ -376,7 +384,7 @@ class FrozenPreviewTests(unittest.TestCase):
                     [pose_hand("neutral", 1, first, pinching=True),
                      pose_hand("neutral", 2, second, pinching=True)]]
         with patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
-            self.preview(interaction, [frame() for _ in gestures], [-1, ord("F"), ord("q")],
+            self.preview(scene, [frame() for _ in gestures], [-1, ord("F"), ord("q")],
                          gesture_frames=gestures, toolbar=toolbar)
             toggle.assert_not_called()
         self.assertEqual(toolbar.selected, "GRAYSCALE")
@@ -404,7 +412,11 @@ class FrozenPreviewTests(unittest.TestCase):
         interaction = placed_rectangle()
         interaction.rectangle = Rectangle(100, 380, 400, 470)
         toolbar = FilterToolbar()
-        point = (174, 402)
+        button = toolbar.buttons(WIDTH, HEIGHT)[1]
+        point = ((button.left + button.right) / 2, (button.top + button.bottom) / 2)
+        from panels import PanelCollection
+        scene = PanelCollection(interaction)
+        scene.submenu = "EFFECTS"
         gestures = [[pose_hand("open", 1, (50, 50)), pose_hand("open", 2, point)],
                     [pose_hand("fist", 1, (50, 50)), pose_hand("open", 2, point)],
                     [pose_hand("fist", 1, (50, 50)), pose_hand("neutral", 2, point, pinching=True)],
@@ -413,7 +425,7 @@ class FrozenPreviewTests(unittest.TestCase):
         with patch("freeze_control.time.monotonic", side_effect=[0.0, 1.0, 3.0]), \
                 patch.object(interaction, "toggle_frozen", wraps=interaction.toggle_frozen) as toggle:
             inputs, shown, labels = self.preview(
-                interaction, images, [-1, -1, -1, ord("q")], gesture_frames=gestures, toolbar=toolbar,
+                scene, images, [-1, -1, -1, ord("q")], gesture_frames=gestures, toolbar=toolbar,
             )
             toggle.assert_not_called()
         self.assertEqual(toolbar.selected, "GRAYSCALE")
@@ -470,8 +482,8 @@ class FrozenPreviewTests(unittest.TestCase):
                    for index, point in enumerate(points)]
         self.preview(interaction, [frame(), frame(), frame()], [-1, -1, ord("q")],
                      gesture_frames=[released, pressed, pressed], toolbar=toolbar)
-        self.assertEqual(toolbar.selected, "GRAYSCALE")
-        self.assertEqual(interaction.state, "WAITING_FOR_RELEASE")
+        self.assertEqual(toolbar.selected, "ORIGINAL")
+        self.assertEqual(interaction.state, "READY")
         self.assertIsNone(interaction.rectangle)
 
     def test_freezing_with_an_effect_saves_raw_color_and_original_restores_it(self):

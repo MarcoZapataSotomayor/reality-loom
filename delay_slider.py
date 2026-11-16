@@ -72,7 +72,7 @@ class DelaySlider:
                 self._armed.add(hand.track_id)
             elif hand.track_id in self._armed:
                 self._armed.remove(hand.track_id)
-                if track is not None and track.contains(hand.pinch_point):
+                if track is not None and interaction.submenu == "TIME" and track.contains(hand.pinch_point):
                     candidates.append(hand)
         if candidates:
             owner = min(candidates, key=lambda hand: hand.track_id)
@@ -90,14 +90,13 @@ class DelaySlider:
         return False
 
     def draw(self, frame, interaction, enabled):
-        if interaction.content_mode != "DELAYED" or interaction.creation_mode:
+        if interaction.submenu != "TIME" or interaction.active_panel is None or interaction.creation_mode:
             return
         height, width = frame.shape[:2]
         layout = Layout(width, height)
         track = self.track(width, height)
         if track is None:
             return
-        card(frame, layout.slider)
         color = ACCENT if enabled else MUTED
         value = interaction.active_panel.delay_seconds
         text(frame, f"Delay: {value:.1f} s   [ / ]", (track.left, layout.slider.top + round(19 * layout.scale)),

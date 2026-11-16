@@ -32,7 +32,8 @@ class FreezeController:
         """Call after interaction.update so resizing or a drag wins this frame."""
         self._now = time.monotonic() if now is None else now
         self._applied = False
-        enabled = interaction.state == "PLACED" and interaction.rectangle is not None
+        enabled = (interaction.state == "PLACED" and interaction.rectangle is not None
+                   and getattr(interaction, "fist_enabled", True))
         self._pending = self.fists.update(hands, interaction.rectangle, enabled, self._now)
         if not enabled:
             self._feedback_until = 0.0

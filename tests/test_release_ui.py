@@ -39,8 +39,11 @@ class SharedLayoutTests(unittest.TestCase):
             self.assertEqual((button.left, button.top, button.right, button.bottom),
                              (box.left, box.top, box.right, box.bottom))
             point = ((box.left + box.right) / 2, (box.top + box.bottom) / 2)
-            toolbar.update(samples(False, point), 640, 480, True)
-            self.assertTrue(toolbar.update(samples(True, point), 640, 480, True))
+            scene = PanelCollection()
+            add_panel(scene)
+            scene.submenu = "TIME" if button.name == "DELAY" else "EFFECTS" if button.name in ("ORIGINAL", "GRAYSCALE", "PIXELATE", "NEON") else None
+            toolbar.update(samples(False, point), 640, 480, True, interaction=scene)
+            self.assertTrue(toolbar.update(samples(True, point), 640, 480, True, interaction=scene))
             self.assertEqual(toolbar.action, button.name)
         track = DelaySlider.track(640, 480)
         self.assertEqual((track.left, track.right, track.y), layout.slider_track)
@@ -129,6 +132,7 @@ class HelpInputTests(unittest.TestCase):
                 self.setUp()
                 if operation == "SLIDER":
                     self.panel.source_mode = "DELAYED"
+                    self.scene.submenu = "TIME"
                     track = self.slider.track(640, 480)
                     point = (track.left, track.y)
                     self.slider.update(samples(False, point), 640, 480, self.scene, True)

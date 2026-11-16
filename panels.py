@@ -1,6 +1,6 @@
 """Up to four panel data records, operated by one shared gesture controller."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import monotonic
 
 import numpy as np
@@ -36,7 +36,11 @@ class PanelCollection:
         self._next_id = 1
         self._pinches = {}
         self.notice = ""
-        self.creation_mode = True
+        self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
+        self._edit_start = None
+        self._delay_start = None
         self.history = TemporalHistory()
         self._frame_time = 0.0
         self.adjusting_delay = False
@@ -69,10 +73,44 @@ class PanelCollection:
         return (self.can_delete and self.content_mode == "DELAYED"
                 and self.controller.can_start_manipulation)
 
+    @property
+    def fist_enabled(self):
+        return (self.toolbar_enabled and self.tool == "SELECT" and self.submenu is None
+                and self.controller.can_start_manipulation and self.active_panel is not None)
+
+    def switch_tool(self, tool):
+        if tool not in ("SELECT", "MOVE", "RESIZE") or not self.toolbar_enabled:
+            return False
+        if tool != "SELECT" and self.active_panel is None:
+            return False
+        self.tool = tool
+        self.submenu = None
+        self.require_release()
+        self.notice = "Release both hands to use the tool."
+        return True
+
+    def cancel_edit(self):
+        if self.adjusting_delay:
+            if self.active_panel is not None:
+                self.active_panel.delay_seconds = self._delay_start
+            self.adjusting_delay = False
+        elif self._edit_start is not None:
+            self.controller.rectangle = self._edit_start
+            self._store_active()
+        elif self.tool == "SELECT":
+            return False
+        self._edit_start = None
+        self.tool = "SELECT"
+        self.submenu = None
+        self.require_release()
+        self.notice = "Edit canceled. Release both hands."
+        return True
+
     def begin_delay_adjustment(self):
         if not self.can_adjust_delay:
             return False
         self.adjusting_delay = True
+        self._delay_start = self.active_panel.delay_seconds
         self.notice = "Adjusting delay. Release the controlling pinch to finish."
         return True
 
@@ -105,9 +143,12 @@ class PanelCollection:
         return self.default_filter
 
     @property
+    def operation_active(self):
+        return self.creation_mode or self.adjusting_delay or self.state in ("DRAGGING", "RESIZING")
+
+    @property
     def toolbar_enabled(self):
-        return (not self.adjusting_delay and self.state in ("READY", "PLACED")
-                and (not self.creation_mode or not self.panels))
+        return not self.operation_active and self.state in ("READY", "PLACED")
 
     @property
     def can_new(self):
@@ -120,15 +161,31 @@ class PanelCollection:
     @property
     def status_text(self):
         target = "NEW" if self.creation_mode else f"ACTIVE #{self.active_id}"
-        return f"Panels: {len(self.panels)}/{MAX_PANELS} | {target} | {self.state.replace('_', ' ')}"
+        return f"Panels: {len(self.panels)}/{MAX_PANELS} | {target} | {self.tool} | {self.state.replace('_', ' ')}"
 
     @property
     def instructions(self):
         if self.notice:
             return self.notice
         if self.creation_mode and self.panels:
-            return "Create with two pinches. Esc: cancel | R: clear all"
-        return self.controller.instructions.replace("R: clear", "R: clear ALL")
+            return "Pinch both hands, move, release either. Esc: cancel."
+        if self.state == "WAITING_FOR_RELEASE" or not self.controller.can_start_manipulation and self.active_panel:
+            return "Release visible hands to resume."
+        if self.creation_mode:
+            return "Pinch both hands, move, then release either to create."
+        if self.active_panel is None:
+            return "Choose New / N to create a panel. H: help."
+        if self.submenu == "EFFECTS":
+            return "Choose an effect for the active panel."
+        if self.submenu == "TIME":
+            if self.content_mode == "FROZEN":
+                return "Unfreeze before changing the delay."
+            if self.content_mode == "LIVE":
+                return "Toggle Delay to show historical video."
+            return "Pinch the slider to adjust the rolling delay."
+        return {"SELECT": "Fresh pinch on a panel to select it.",
+                "MOVE": "Fresh pinch inside the active panel to move it.",
+                "RESIZE": "Pinch diagonally opposite active handles."}[self.tool]
 
     def _commit_creation(self):
         panel = Panel(self._next_id, self.rectangle, self.default_filter, self.controller.frozen_image)
@@ -136,6 +193,8 @@ class PanelCollection:
         self.panels.append(panel)
         self.active_id = panel.panel_id
         self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
         self.notice = ""
 
     def _load_active(self, require_release=False):
@@ -154,7 +213,7 @@ class PanelCollection:
         if self.rectangle is None:
             self.panels.remove(panel)
             self.active_id = self.panels[-1].panel_id if self.panels else None
-            self.creation_mode = not self.panels
+            self.creation_mode = False
             self._load_active(require_release=True)
         else:
             panel.rectangle = self.rectangle
@@ -173,7 +232,10 @@ class PanelCollection:
         if not self.creation_mode:
             self._store_active()
         self.adjusting_delay = False
-        self.creation_mode = not self.panels
+        self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
+        self._edit_start = None
         self._load_active(require_release=True)
         self._pinches = {}
         self.notice = "Release both hands to resume. H: help."
@@ -188,6 +250,8 @@ class PanelCollection:
             return False
         self._store_active()
         self.creation_mode = True
+        self.tool = "CREATE"
+        self.submenu = None
         self.controller.reset()
         self._pinches = {}
         self.notice = "Release both hands to create. Esc: cancel."
@@ -197,6 +261,7 @@ class PanelCollection:
         if not self.creation_mode or not self.panels:
             return False
         self.creation_mode = False
+        self.tool = "SELECT"
         self._load_active(require_release=True)
         self._pinches = {}
         self.notice = "Creation canceled. Release both hands."
@@ -208,7 +273,9 @@ class PanelCollection:
             return False
         self.panels.remove(self.active_panel)
         self.active_id = self.panels[-1].panel_id if self.panels else None
-        self.creation_mode = not self.panels
+        self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
         self._load_active(require_release=True)
         self._pinches = {}
         self.notice = "Panel deleted. Release both hands."
@@ -232,10 +299,22 @@ class PanelCollection:
     def apply_action(self, action):
         if not self.toolbar_enabled:
             return False
+        if action == "NOOP":
+            return False
         if action == "NEW":
             return self.begin_creation()
         if action == "DELETE":
             return self.delete_active()
+        if action in ("SELECT", "MOVE", "RESIZE"):
+            return self.switch_tool(action)
+        if action in ("EFFECTS", "TIME"):
+            if self.active_panel is None:
+                return False
+            self.submenu = None if self.submenu == action else action
+            self.require_release()
+            return True
+        if action == "FREEZE":
+            return self.active_panel is not None
         if action == "DELAY":
             if not self.can_delay:
                 self.notice = ("Unfreeze the active panel first." if self.active_panel
@@ -253,7 +332,10 @@ class PanelCollection:
         """R is clear-all. IDs and the default for future panels are not reset."""
         self.panels.clear()
         self.active_id = None
-        self.creation_mode = True
+        self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
+        self._edit_start = None
         self.notice = "All panels cleared. Release both hands."
         self._pinches = {}
         self.controller.reset()
@@ -273,6 +355,7 @@ class PanelCollection:
             self.controller.update(hands, frame_width, frame_height)
             if self.state == "PLACED" and self.rectangle is not None:
                 self._commit_creation()
+                self.require_release()
             elif old_state == "CREATING" and self.state == "WAITING_FOR_RELEASE":
                 self.notice = "Creation failed. Release both hands to retry; Esc cancels."
             elif old_state == "WAITING_FOR_RELEASE" and self.state == "READY":
@@ -280,32 +363,61 @@ class PanelCollection:
             return
 
         if not self.controller.can_start_manipulation:
-            self.controller.update(hands, frame_width, frame_height)
+            was_editing = self.state in ("DRAGGING", "RESIZING")
+            lost = ((self.state == "DRAGGING" and self.controller._drag_hand_id not in self._pinches)
+                    or (self.state == "RESIZING" and not self.controller._resize_hands.keys() <= self._pinches.keys()))
+            if self.state == "DRAGGING":
+                self.controller._update_drag(hands, frame_width, frame_height, allow_resize=False)
+            elif self.state != "READY":
+                self.controller.update(hands, frame_width, frame_height)
             self._store_active()
-            if self.state == "PLACED":
+            if was_editing and self.state not in ("DRAGGING", "RESIZING"):
+                self._edit_start = None
                 self.notice = ""
+            if self.state in ("PLACED", "READY"):
+                self.notice = ""
+                self._edit_start = None
+            if lost:
+                self.require_release()
+                self.notice = "Tracking lost. Release both hands to resume."
             return
         self.controller.observe_pinches(hands)
-        if self.controller.try_resize(hands):
-            self.notice = ""
+        if self.submenu is not None:
+            return
+        if self.tool == "RESIZE":
+            start = replace(self.rectangle)
+            fresh = any(hand.is_pinching and previous.get(hand.track_id) is False for hand in hands)
+            if fresh and self.controller.try_resize(hands):
+                self._edit_start = start
+                self.notice = "Release to finish resizing. Esc: cancel."
             return
 
         candidates = []
         for hand in hands:
             if not hand.is_pinching or previous.get(hand.track_id) is not False:
                 continue
-            hit = next((panel for panel in reversed(self.panels)
-                        if panel.rectangle.contains(hand.pinch_point)), None)
+            if self.tool == "SELECT":
+                hit = next((panel for panel in reversed(self.panels)
+                            if panel.rectangle.contains(hand.pinch_point)), None)
+            else:
+                hit = self.active_panel
+                if hit is not None and not hit.rectangle.contains(hand.pinch_point):
+                    hit = None
             if hit is not None:
                 candidates.append((hand.track_id, hit, hand))
         if candidates:
             _, selected, hand = min(candidates, key=lambda item: item[0])
-            self.panels.remove(selected)
-            self.panels.append(selected)
-            self.active_id = selected.panel_id
-            self._load_active()
-            self.controller.begin_drag(hand)
-            self.notice = ""
+            if self.tool == "SELECT":
+                self.panels.remove(selected)
+                self.panels.append(selected)
+                self.active_id = selected.panel_id
+                self._load_active()
+                self.require_release()
+                self.notice = "Panel selected. Release both hands."
+            elif self.tool == "MOVE":
+                self._edit_start = replace(self.rectangle)
+                self.controller.begin_drag(hand)
+                self.notice = "Release to finish moving. Esc: cancel."
 
     def toggle_frozen(self, raw_frame):
         if (self.adjusting_delay or self.creation_mode
@@ -327,6 +439,27 @@ class PanelCollection:
         if changed and self.notice.startswith("Buffering..."):
             self.notice = ""
         return changed
+
+    def hover_target(self, point):
+        """Return an eligible panel and optional handle for the visual pointer."""
+        if not self.toolbar_enabled or not self.controller.can_start_manipulation or self.submenu:
+            return None
+        if self.tool == "SELECT":
+            panel = next((panel for panel in reversed(self.panels) if panel.rectangle.contains(point)), None)
+            return (panel.panel_id, None) if panel else None
+        panel = self.active_panel
+        if panel is None:
+            return None
+        if self.tool == "MOVE" and panel.rectangle.contains(point):
+            return panel.panel_id, None
+        if self.tool == "RESIZE":
+            from math import dist
+            from interaction import RESIZE_HIT_RADIUS_PIXELS
+            corners = panel.rectangle.corner_points()
+            name = min(corners, key=lambda name: dist(corners[name], point))
+            if dist(corners[name], point) <= RESIZE_HIT_RADIUS_PIXELS:
+                return panel.panel_id, name
+        return None
 
     def composite(self, raw_frame, display_frame):
         invalid = []
@@ -350,7 +483,7 @@ class PanelCollection:
         if invalid:
             if self.active_panel is None:
                 self.active_id = self.panels[-1].panel_id if self.panels else None
-                self.creation_mode = not self.panels
+                self.creation_mode = False
                 self._load_active(require_release=True)
         if self.creation_mode:
             self.controller.composite_panel(raw_frame, display_frame, self.default_filter)
@@ -360,7 +493,10 @@ class PanelCollection:
         self.history.clear()
         if not self.creation_mode:
             self._store_active()
-        self.creation_mode = not self.panels
+        self.creation_mode = False
+        self.tool = "SELECT"
+        self.submenu = None
+        self._edit_start = None
         self._load_active(require_release=True)
         self._pinches = {}
         self.notice = "Camera recovering. Release both hands after reconnecting."

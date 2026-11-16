@@ -26,6 +26,7 @@ def delayed_scene():
     scene = PanelCollection()
     panel = add_panel(scene)
     panel.source_mode = "DELAYED"
+    scene.submenu = "TIME"
     return scene, panel
 
 
@@ -288,7 +289,7 @@ class SliderPreviewTests(unittest.TestCase):
                 opened, held = self.capture_hands()
                 keys = [-1, -1, key]
                 gestures = [opened, held, held]
-                if key in (ord("r"), ord("c")):
+                if key in (ord("r"), ord("c"), 27):
                     keys.append(ord("q"))
                     gestures.append(held)
                 pending = MagicMock(poll=MagicMock(return_value=None))
@@ -297,10 +298,8 @@ class SliderPreviewTests(unittest.TestCase):
                     return pending
                 self.preview(scene, keys, gestures, recover=recover)
                 self.assertFalse(scene.adjusting_delay)
-                if key == ord("r"):
-                    self.assertFalse(scene.panels)
-                else:
-                    self.assertEqual(panel.delay_seconds, 1.5)
+                self.assertEqual(scene.panels, [panel])
+                self.assertEqual(panel.delay_seconds, 2.0 if key == 27 else 1.5)
                 if key == ord("c"):
                     pending.close.assert_called_once()
                     self.assertFalse(scene.history.frames)

@@ -270,7 +270,7 @@ class RectangleInteraction:
         self._drag_position = None
         self._grab_release_required = require_release
 
-    def _update_drag(self, hands, frame_width, frame_height):
+    def _update_drag(self, hands, frame_width, frame_height, allow_resize=True):
         controller = next((hand for hand in hands if hand.track_id == self._drag_hand_id), None)
         if controller is None:
             self._stop_drag(require_release=True)
@@ -283,7 +283,7 @@ class RectangleInteraction:
             return
 
         # Upgrade before applying drag movement, preserving the displayed box.
-        if self._try_start_resize(hands):
+        if allow_resize and self._try_start_resize(hands):
             return
 
         target = self.rectangle.moved_to(

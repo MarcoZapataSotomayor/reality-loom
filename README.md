@@ -1,11 +1,9 @@
 # Reality Loom
 
-A live camera workspace with up to four independent panels. Create with two
-pinches, select/drag with a fresh one-hand pinch, resize at opposite handles,
-and choose LIVE, DELAYED (0.5-2.5 seconds), or FROZEN content independently per panel.
-Each panel owns its geometry, temporal mode, original frozen crop, and filter.
-
-No images, video, panel history, or session state are saved to disk.
+A live OpenCV camera workspace with up to four independent panels. Explicit
+SELECT, MOVE, RESIZE, and CREATE tools control panel selection and geometry.
+Each panel keeps its filter, frozen crop, and rolling video delay independently.
+No images, video, history, or session data are written to disk.
 
 ## Local setup
 
@@ -76,210 +74,136 @@ history buffer, or gesture imports. C and the exit controls remain available.
 
 ## Controls
 
-| Input in the focused preview | Action |
+The preview must have keyboard focus. The top toolbar row selects a tool; the
+second row contains actions for the active panel. Dim controls are unavailable.
+
+| Keyboard / control | Action |
 | --- | --- |
-| Two pinches with no panels | Create the first panel. |
-| New panel button / N | Begin explicit creation of another panel. |
-| Fresh pinch inside a panel | Select it, bring it to front, and start dragging. |
-| Both pinches at opposite active handles | Start resizing; can upgrade a drag. |
-| Filter buttons / 1-4 | Change the active panel's filter, or the new-panel default if none is active. |
-| Delay button / T | Toggle only the active placed panel between LIVE and DELAYED, retaining its configured delay; unfreeze first if FROZEN. |
-| Delay slider | Fresh released-pinch-to-pinch inside the track starts adjustment; move horizontally, release to finish. |
-| [ / ] | Decrease/increase the idle DELAYED panel's delay by 0.1 seconds. |
-| F / deliberate fist hold | Freeze the active panel's displayed LIVE or DELAYED source; unfreeze to its previous mode. |
-| Delete button / Delete key | Remove only the active panel. |
-| R | Clear ALL panels and original crops; keep the default filter. |
-| C | Reconnect the selected camera; cancel pending operations/creation. |
-| H | Toggle compact controls/gestures help; pause workspace actions while visible. |
-| Escape inside help | Close help and require hand release before resuming gestures. |
-| Escape during new-panel creation with existing panels | Cancel the draft and keep existing panels. |
-| Escape otherwise / Q / window close / Ctrl+C | Exit. Q always exits. |
+| V / Select | Select and raise a panel with a fresh pinch, without moving it. Default tool. |
+| M / Move | Freshly pinch inside the active panel to drag it. Other panels are ignored. |
+| S / Resize | Pinch diagonally opposite handles of the active panel. |
+| N / New | Enter CREATE; use two pinches, move, then release either to place. |
+| F / Freeze or Unfreeze | Freeze the displayed raw source, or return to the previous LIVE/DELAYED mode. |
+| E / Effects | Open/close the existing four filter choices. |
+| 1-4 | Original, Grayscale, Pixelate, Neon. Works with Effects closed too. |
+| Y / Time | Open/close the Delay toggle and delay slider. |
+| T / Delay | Toggle LIVE/DELAYED while keeping the panel's configured delay. Unfreeze first. |
+| [ / ] | Adjust the idle DELAYED panel's delay by -/+ 0.1 s, even with Time closed. |
+| Delete / Delete button | Delete only the active panel. |
+| R | Clear all panels and frozen crops while idle, keeping the default filter and increasing session IDs. |
+| H | Toggle compact help. Gestures and workspace keys pause while it is visible. |
+| D | Toggle landmark skeletons and per-hand debug labels; initially hidden. |
+| C | Cancel pending work and reconnect the same selected camera. |
+| Q / window close / Ctrl+C | Exit. Q always exits, including during help or an operation. |
 
-New/Delete/filter/delay actions are disabled during manipulation, explicit creation
-with existing panels, recovery, or release-to-rearm. At the four-panel limit,
-New is dimmed and attempts report the limit without adding or deleting anything.
+Escape depends on context:
 
-## Create, select, and delete panels
+- Inside help, close help.
+- During a MOVE/RESIZE operation, restore its starting geometry and return to
+  SELECT. An idle MOVE/RESIZE tool also returns to SELECT without exiting.
+- During slider capture, restore its starting delay and return to SELECT.
+- During CREATE with existing panels, discard the draft and keep those panels.
+- During CREATE without existing panels, or idle SELECT, exit as before.
 
-`MAX_PANELS = 4` is defined in `panels.py`. Panels have stable session IDs, shown
-on their borders. Bringing a panel forward does not change its ID. Deleted IDs
-are not reused in the same run, including after clear-all or camera-size changes.
+Use E or Y again to close a contextual submenu, or switch tools. Escape in idle
+SELECT retains exit behavior even when a contextual submenu is open.
 
-With no panels, the original two-hand workflow remains available. Both pinches
-start a draft using their thumb/index midpoints as opposite corners. Move while
-both pinches stay active, then release either while both tracks remain visible.
-The last preview is committed if width and height are each at least 40 pixels.
-Creation allows crossed corners by sorting them; invalid small drafts are discarded.
+## Tools and interaction priorities
 
-New panel enters an explicit creation mode. Existing panels remain visible but
-cannot be selected, dragged, resized, filtered, frozen, or deleted during it.
-The toolbar activation pinch is consumed: show two visible released pinches
-before creating. A failed draft or tracking loss keeps existing panels and waits
-for both releases before retrying. Escape cancels the draft when panels exist.
-Without existing panels, Escape retains its normal exit behavior.
+Startup is SELECT with no panels. Two pinches alone no longer create a panel:
+choose New/N first. CREATE blocks competing panel actions. A valid draft needs
+at least 40 pixels in each dimension. Tracking loss or a too-small draft discards
+only that draft and waits for release; existing panels survive. Successful
+creation activates the new panel and returns to SELECT.
 
-Successful creation adds and selects the new panel at the front. A fresh
-OPEN-to-PINCH transition inside an existing panel selects the topmost panel
-under that pointer and starts a no-snap drag. If hands select different panels
-simultaneously, the lowest track ID wins. Only the active panel has resize handles.
-An ongoing operation cannot transfer to another hand or another panel.
+SELECT uses fresh released-pinch-to-pinch transitions. The topmost panel wins
+in overlaps. Selecting an exposed part of a lower panel raises it without
+changing geometry. Simultaneous selection uses the lowest stable hand track ID.
+MOVE never implicitly selects a different panel. RESIZE only operates on the
+active panel, with fixed hand/corner roles, minimum size, bounds, and crossing
+protection from the existing geometry controller. There is no automatic
+MOVE-to-RESIZE upgrade. Only RESIZE displays corner handles.
 
-Delete removes only the active panel and selects the remaining topmost panel.
-R is deliberately different: it clears the entire collection and every crop.
-After New/Delete/filter/delay actions, two visible released pinches are required before
-another manipulation. Held action pinches cannot become delayed grabs or drafts.
+Tool switches, creation completion, panel selection, and toolbar actions require
+release before gestures resume. When prompted, show both visible hands with
+released pinches. A held pinch cannot become a delayed grab, creation, or button
+press. The controlling track ID owns movement/resize until release or loss;
+there is no automatic hand takeover. Losing a controller keeps the last valid
+geometry and displays tracking-loss feedback. Escape only rolls back a currently
+active edit, not one that already ended on release/loss.
 
-## Drag and resize
+During an active edit or slider capture, competing tool, content, filter, delete,
+and creation controls are blocked. H and C safely stop unfinished work, keeping
+committed content and the last valid geometry. R is an explicit idle clear-all
+and is blocked during creation, manipulation, slider capture, help, or recovery.
+Q always exits. Normal release completes movement in the current tool.
 
-One-hand dragging preserves the grab offset and size, with light position
-smoothing reset at every grab. Pinching outside and entering the panel cannot
-grab it. Release stops at the current position. Losing the owner stops movement
-and requires visible hands to release before another grab; there is no takeover.
+## Contextual panel actions
 
-Two pinches within `RESIZE_HIT_RADIUS_PIXELS = 28.0` of diagonally opposite
-active handles start RESIZING before an ordinary grab or fist activation.
-A drag can upgrade if both current pointers meet those corner conditions.
-Corner-to-pointer offsets prevent a jump, and each ID keeps its corner role.
+Freeze/Unfreeze, Effects, Time, and Delete are shown in the second toolbar row;
+they are disabled without an active panel. Effects and Time are mutually
+exclusive. While either submenu is open, canvas selection/manipulation and the
+fist shortcut are paused. Toolbar gestures consume every currently pinched hand
+before any panel action, so UI selections cannot also grab or resize a panel.
 
-Resizing stays in bounds and at least 40 pixels wide and high. Crossing pointers
-stops at the minimum instead of swapping roles or flipping the image. Release
-either pinch or lose a controlling track to keep the last valid geometry.
-Both visible hands must release before another manipulation; it never falls
-straight into dragging. One-hand dragging elsewhere still works.
+Each panel owns ORIGINAL, GRAYSCALE, PIXELATE, or NEON filtering. Filters operate
+on raw source pixels and never accumulate into the saved crop or history.
+Keys 1-4 with no active panel retain the existing new-panel default-filter
+behavior; panel-only controls remain dim. New panels inherit that default and
+always start LIVE with a configured delay of 2.0 seconds. Selecting/changing
+another panel does not change its neighbors' filters or modes.
 
-Width and height change independently. Frozen content can stretch; there is no
-aspect-ratio lock. Geometry settings in `interaction.py` include:
+LIVE samples the current raw screen region. DELAYED samples that panel's current
+screen region from a shared historical frame: moving/resizing resamples the
+region, rather than transporting a fixed video crop. F/Freeze and a valid fist
+capture whichever raw source was displayed, before filters and UI. FROZEN
+transports its original independent crop, and resizing always scales that crop.
+Unfreezing restores the previous LIVE or DELAYED mode and configured delay.
 
-- `MIN_RECTANGLE_SIZE_PIXELS = 40.0`
-- `POSITION_SMOOTHING = 0.35` for creation
-- `DRAG_SMOOTHING = 0.35`
-- `RESIZE_SMOOTHING = 0.35`
-- `RESIZE_HIT_RADIUS_PIXELS = 28.0`
+Time reveals the Delay toggle and its slider. A fresh pinch on the track starts
+capture with one stable hand owner. Horizontal movement maps to 0.5-2.5 seconds,
+clamped and rounded to 0.1-second steps (half steps round upward). Capture
+continues outside the track until release/loss. Another hand cannot take over.
+The video continues advancing at that rolling offset; this is not timeline
+scrubbing or paused playback. Bracket keys work without visible hands; if a step
+coincides with pinches, the release gate consumes them. LIVE/FROZEN, creation,
+manipulation, help, and recovery disable delay adjustment. Buffering panels show
+`Buffering...` and reject freezing with feedback until history is available.
 
-## Per-panel content and filters
+The fist shortcut is only eligible in idle SELECT, with no contextual submenu.
+Fully open the hand, then hold a fist outside the active panel for 0.8 seconds.
+Progress remains visible. A hold triggers once and requires a new full-open
+observation; releasing a pinch is insufficient. CREATE, MOVE, RESIZE, slider
+capture, submenus, help, and recovery cancel holds and require full-open rearming.
+F and the fist share one source-aware toggle per frame.
 
-LIVE samples the panel's region from the current raw live frame. DELAYED samples
-the same current screen region from a shared historical frame at that panel's
-configured delay. Moving/resizing a delayed panel changes that sampled region;
-it does not transport a fixed video crop. New panels start LIVE with a configured
-delay of 2.0 seconds. Each panel retains its own delay across T toggles,
-freezing/unfreezing, selection, and same-size camera recovery.
+## Pointer, overlays, and help
 
-FROZEN retains one independent raw BGR crop captured with F or a valid fist
-activation, using the panel's current LIVE or DELAYED source before its filter.
-Unfreezing returns to that panel's previous LIVE or DELAYED mode. Delay/T is
-dimmed for frozen panels and rejected until they are unfrozen. A delayed panel
-without sufficiently old history shows `Buffering...`; F/fist then leaves it
-delayed and reports that it cannot freeze yet.
+Small thumb/index midpoint pointers are always drawn while tracking: released
+pointers are hollow white, pinching pointers are filled yellow. Eligible buttons,
+panels, or resize handles under a pointer highlight. Disabled targets do not
+highlight. One concise instruction describes the current action. The active
+panel has a stronger cyan border; compact bounded tags identify panel ID, mode,
+and filter. The HUD shows the tool, active panel, temporal mode, and delay.
 
-Dragging a frozen panel transports its source; resizing scales the original crop.
-Effects never accumulate into it, and no previously resized output is saved.
+Landmark skeletons and per-hand debug labels are hidden by default; D toggles
+these independently of `--debug-camera`, which only logs raw camera statistics.
+The tracker always runs on current raw live frames, even with debug overlays off.
 
-F is accepted only while PLACED. Raw capture excludes other panels, landmarks,
-handles, toolbar, pointers, and instructions. Inference always receives live raw
-pixels, even when frozen content visually covers a hand.
+H opens a compact list of actual controls. Only H/Escape (close) and Q (exit)
+act on the workspace while help is visible. Live inference and bounded history
+sampling continue when capture is available; existing recovery also continues.
+Help discards drafts, cancels slider/fist progress, and stops edits at their last
+valid geometry. Committed panels, crops, modes, filters, delay values, and stacking
+are preserved. Closing help consumes that frame, returns to SELECT, and requires
+both visible hands to release before gesture actions resume.
 
-Panels composite back-to-front on a fresh frame copy. Each LIVE source comes
-from raw input, never from a lower panel's composite. UI is drawn afterward.
-The HUD shows count, active ID, manipulation state, mode, filter, and configured
-delay. Each panel has a compact ID/mode/filter tag clamped within the frame.
-The active panel has a thicker cyan border and is the only one with resize
-handles. Inactive panels use thin muted borders.
-
-`ui.py` owns shared layout rectangles, typography, colors, and drawing helpers.
-Toolbar drawing/hitboxes and the slider drawing/hitbox derive from that same
-layout. Dark translucent cards separate application status, delay adjustment,
-toolbar rows, and fist feedback; text uses one antialiased pass and truncates
-long labels to fit. Fist hold progress is highlighted. Selected controls have
-cyan borders and unavailable actions are dimmed.
-
-The layout targets 1280x720 and 640x480 raw frames, using larger buttons and
-spacing at the larger size. It never changes camera capture resolution, crop,
-or aspect ratio. Below 480 pixels wide or 360 pixels high, gesture controls
-and their hitboxes are hidden and a concise notice is shown. Keyboard shortcuts
-remain available under their usual idle/mode rules. Increasing the OpenCV
-window size alone does not change the underlying frame size.
-
-## Help overlay
-
-H opens a compact list of actual keyboard controls and gestures. While visible,
-only H/Escape (close) and Q (exit) act on the workspace. An existing camera
-recovery continues, and live capture, inference, and shared history sampling
-continue when the camera is available. All panel gestures, slider capture,
-toolbar actions, freezing, clear-all, and reconnect requests are gated.
-
-Opening help discards an unfinished creation draft and stops drag/resize at
-the latest valid geometry. It cancels delay capture and fist progress, while
-preserving committed panels, crops, temporal modes, configured delays, filters,
-and stacking. Closing help consumes that frame and requires both visible hands
-to release before gesture interaction resumes. Escape outside help retains its
-existing cancel-creation/exit behavior. `--no-tracking` stays a plain diagnostic
-preview and does not enable help or workspace controls.
-
-At very small sizes, help shows a concise size notice instead of overlapping
-rows. Synthetic previews are generated from synthetic pixels only into the
-Git-ignored `.tmp/ui-previews/` directory:
-
-```powershell
-.\.venv\Scripts\python.exe .\tests\ui_preview.py
-```
-
-| Filter button / key | Effect |
-| --- | --- |
-| 1 ORIGINAL | Unfiltered source colors. |
-| 2 GRAYSCALE | BGR luminance repeated in all three channels. |
-| 3 PIXELATE | Coarse averaged blocks with sharp pixel boundaries. |
-| 4 NEON | Colored edge outlines on black. |
-
-Each panel keeps its own selected filter. Changing the active panel does NOT
-change the default for future panels. With no active panel, filter selection
-sets that default instead. New panels inherit the default, not the previously
-active panel's filter. Clear-all keeps the default; deleted panel settings are gone.
-
-Toolbar selection requires a fresh released-pinch-to-pinch transition inside
-a button. Moving a held pinch onto it does not select. Newly appearing pinched
-tracks must release first. The lowest track ID wins simultaneous button hits;
-an explicit keyboard action wins a simultaneous gesture. A toolbar action
-consumes the entire frame before panel operations or fist activation and cancels
-pending fist progress. Keyboard shortcuts share the same action/rearm rules.
-
-Small pointer rings show thumb/index midpoints (white released, yellow pinching).
-Filters return independent uint8, three-channel BGR pixels at the panel size.
-The implementations use only the existing OpenCV/NumPy packages. Named settings
-in `filters.py` include `PIXEL_BLOCK_SIZE`, `NEON_EDGE_LOW`, `NEON_EDGE_HIGH`,
-and `NEON_COLOR_BGR`.
-
-## Adjusting the rolling delay
-
-The HUD shows the active panel's configured delay, including while LIVE or
-FROZEN. An active DELAYED panel also shows a compact slider above the toolbar,
-with a marker and a value such as `Delay: 1.5 s`. This changes a rolling offset
-from the present; video continues advancing at the selected offset. It does
-not pause playback or scrub a saved timeline.
-
-Delay is clamped to 0.5-2.5 seconds in 0.1-second steps. Mapping uses integer
-tenths with halfway positions rounding upward to avoid accumulated step errors.
-A fresh released-pinch-to-pinch transition inside the slider track starts
-capture. Moving a held pinch onto the track does nothing. The initiating stable
-hand track ID owns capture even outside the track; horizontal movement is clamped
-at either end. Another hand cannot take over. Simultaneous starts use the lowest
-track ID.
-
-Capture takes priority over panel selection, dragging, resizing, toolbar actions,
-and fist holds. It consumes the gesture and cancels pending fist progress.
-While captured, creation, deletion, filters, T, F/fist, bracket adjustments, and
-panel manipulation are blocked. Releasing or losing the owner finishes capture
-and requires both visible hands to release before other gesture actions resume.
-R clears safely, C cancels capture and reconnects, and Q/Escape keep their usual
-exit/cancel behavior.
-
-`[` and `]` adjust only an idle DELAYED panel. They can repeat without visible
-hands. If a step coincides with pinched hands, those gestures are consumed and
-the existing both-release gate applies before further actions. Slider and key
-adjustment are disabled for LIVE/FROZEN panels, creation, dragging, resizing,
-release-to-rearm, and camera recovery. The slider is dimmed while temporarily
-disabled and hidden together with the toolbar when the raw frame cannot fit
-gesture controls; bracket keys remain available when idle.
+`ui.py` owns shared frame-sized layout rectangles and dark translucent drawing
+helpers. Drawing and gesture targets use the same geometry. The layout targets
+1280x720 and 640x480 without changing camera resolution, crop, or aspect ratio.
+Below 480x360, controls/hitboxes are hidden with a concise notice; keyboard
+alternatives remain available under their usual state rules. Increasing only
+the OpenCV window size does not change the underlying frame size.
 
 ## Shared bounded video history
 
@@ -318,159 +242,73 @@ history, and exiting clears it on normal and error paths. R deletes all panels
 and frozen crops; the single bounded history continues sampling while tracking
 is active. `--no-tracking` never creates a history buffer.
 
-## Deliberate fist toggle
+## Camera recovery and cleanup
 
-Fully open the triggering hand while PLACED, then hold a closed fist with its
-palm center outside the active panel for 0.8 seconds. Progress and activation
-feedback appear near the bottom. The active panel alone toggles. Sustained fists
-trigger once and require full-open rearming, not merely a released pinch.
+Windows capture tries DirectShow, then Media Foundation after releasing failed
+attempts. No resolution, codec, FPS, package, or global setting is changed.
+C reopens the same index in a worker; capture failure pauses with a retry
+message rather than switching indices or treating darkness as failure. Exit
+controls remain available during recovery. A pending native driver call cannot
+be interrupted; cleanup releases its eventual camera result.
 
-Fist detection uses folded-finger distances relative to palm size; a thumb/index
-pinch with the other fingers extended is not a fist. Hand labels are FIST, PINCH,
-OPEN (fully extended fingers and thumb), or NEUTRAL. Existing drag/creation
-release gates still use pinch release; full-open rearming is specific to fists.
+Same-size recovery preserves committed panels, frozen crops, filters, delays,
+order, and active ID, returns to SELECT, closes submenus, and waits for release.
+A changed frame size clears panels safely while retaining the default filter
+and never reusing session IDs. Retained delayed panels buffer again after C.
+`--debug-camera` logs the first five raw frames and then at most once every two
+seconds; logging restarts after recovery. `--no-tracking` remains a plain camera
+preview without model, panels, history, help, tools, pointers, or D overlays.
+C and normal exit controls still work there.
 
-Pose interruption or entering the active rectangle restarts the duration.
-Hand loss/replacement requires a new OPEN observation. All ongoing fist holds
-are consumed by one toggle so two fists cannot immediately undo each other.
-F and the fist share one action per frame; F cancels pending fist progress.
-Creation, dragging, resizing, toolbar actions, R, and C cancel holds and require
-a new full-open observation before gesture activation resumes.
+## Validation and synthetic previews
 
-`FIST_HOLD_SECONDS = 0.8` uses a monotonic clock, never frame count. Other named
-geometry thresholds in `gestures.py` are `FIST_FINGER_TIP_MAX`, `FIST_CURL_MARGIN`,
-`FIST_THUMB_TIP_MAX`, `OPEN_FINGER_EXTENSION_MIN`, and `OPEN_THUMB_EXTENSION_MIN`.
-`ACTIVATION_FEEDBACK_SECONDS = 1.2` is in `freeze_control.py`.
-
-## Camera recovery and diagnostics
-
-Windows capture still tries DirectShow first. Failure to open or read the first
-usable frame releases that attempt before trying Media Foundation. No resolution,
-codec, FPS, dependency, or global setting is changed by panel management.
-
-C releases and reopens the same selected index in a worker. The window displays
-Reconnecting camera... and still handles exit controls. Pending creation and
-manipulation are canceled. All committed panels, original crops, filters, order,
-and active ID survive if recovered dimensions match. A size change clears panels
-safely but keeps the new-panel default and avoids reusing IDs. Both visible hands
-must release before interaction resumes. A failed attempt allows C retry or exit.
-
-Initial startup open failure still reports an error and exits. Read failures
-pause with a retry message. Darkness alone never triggers failure or automatic
-reconnection. `--debug-camera` logs raw backend, dimensions, dtype, and pixel
-min/mean/max for five startup frames, then at most every two seconds. It restarts
-the startup count after a successful reconnect; paused status frames are not logged.
-
-To compare the black-preview regression, run camera-only mode, exit, then run
-tracking mode with the same index. Compare both raw statistics and visible images:
-
-```powershell
-.\.venv\Scripts\python.exe .\main.py --camera 0 --no-tracking --debug-camera
-.\.venv\Scripts\python.exe .\main.py --camera 0 --debug-camera
-```
-
-The report that switching indices restores the feed suggests a reopening issue
-but does not prove the cause. No index-switch workaround is run automatically.
-Check Camo/iPad connectivity, close other camera apps, and check Windows desktop
-camera privacy settings if opening fails.
-
-A driver call cannot be interrupted here. Exiting closes the UI and cancels
-delivery; Python waits for a pending reopen to return so its capture is released.
-Normal frame reading remains synchronous.
-
-## Tests and intentional single-panel changes
-
-`PanelCollection` stores panel data and uses one shared `RectangleInteraction`
-for creation/drag/resize. Existing low-level geometry, gesture, filtering, frozen
-content, and camera-recovery tests remain. Preview fixtures wrap their single
-panel in a collection instead of constructing a controller for every panel.
-
-Intentional preview-test changes:
-
-- Toolbar actions now wait for both visible released pinches. Freeze-after-filter
-  tests include that rearm frame instead of toggling immediately.
-- Filter retention is per panel. Only no-active selection changes the new-panel
-  default; R deletes active settings along with every panel.
-- Status includes panel count/active ID instead of a single Rectangle heading.
-- Window mocks use `waitKeyEx`, preserving full Delete-key codes on Windows.
-
-New tests cover the panel limit, stable IDs, independent state, transactional
-creation/cancellation, topmost hits, stacking and ownership, active resize
-priority, selected-only actions, clear-all, overlapping raw-source rendering,
-recovery, and consumed actions. All native camera/window/model entry points in
-preview tests are mocked; other tests use synthetic landmarks and BGR arrays.
-Delayed-content tests cover irregular timestamps, warm-up, sampling, independent
-raw images, frame/byte limits, aspect-ratio mapping, per-panel modes, delayed
-freezing/unfreezing, recovery resets, live inference, and toolbar priorities.
-Adjustment tests cover slider mapping/rounding, fresh pinches, stable ownership,
-release/loss rearming, disabled states, keyboard steps, capture priority,
-independent offsets, freeze retention, recovery cancellation, and unchanged
-history image/frame budgets.
-Release UI checks cover shared drawing/hitbox geometry, bounded text and tags,
-small-frame keyboard access, translucent surfaces, modal input gating,
-cancellation, release-to-rearm, and live raw inference while help is visible.
-Older preview pixel assertions now sample away from the wider UI cards and
-panel tags; toolbar-overlap fixtures derive their points from the shared layout.
+Tests use synthetic landmarks/BGR arrays and mocked native camera/window/model
+entry points. Low-level geometry tests retain the standalone geometry API;
+workspace tests explicitly choose CREATE/MOVE/RESIZE and open contextual menus
+when their gesture controls are needed. Tests cover ownership, priorities,
+release gates, Escape rollback, UI consumption, overlay toggling, source-aware
+freezing, panel stacking, irregular timestamps, budgets, recovery, and help.
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\temporal_history.py .\delay_slider.py .\help_overlay.py .\camera_recovery.py .\hand_tracking.py .\gestures.py .\freeze_control.py .\interaction.py .\filters.py .\filter_toolbar.py .\ui.py .\tests
+.\.venv\Scripts\python.exe -m compileall -q .\main.py .\panels.py .\interaction.py .\filter_toolbar.py .\delay_slider.py .\ui.py .\help_overlay.py .\freeze_control.py .\hand_tracking.py .\gestures.py .\filters.py .\temporal_history.py .\camera_recovery.py .\tests
 .\.venv\Scripts\python.exe .\main.py --help
+.\.venv\Scripts\python.exe .\tests\ui_preview.py
+git diff --check
 ```
 
-## Manual checks and limitations
+Synthetic previews use synthetic pixels only, saved into the Git-ignored
+`.tmp/ui-previews/` directory at 1280x720 and 640x480. They do not demonstrate
+live gesture usability or performance.
 
-1. Create the first panel, then use New/N. Keep pinches held and verify no draft
-   starts until both release. Complete another panel; existing content must stay.
-2. Cancel an in-progress new panel with Escape. Verify Q still exits, and Escape
-   exits normally when not canceling a draft or when no panels exist.
-3. Fill four panels. New must be dimmed and attempts must show the limit. Delete
-   one and create again; remaining IDs must not change or be reused.
-4. Overlap panels. Freshly pinch an overlap to select the topmost, or an exposed
-   area of a lower panel to bring it forward. Check no snap or hand takeover.
-5. Resize only the active handles, including drag-to-resize. Test release, loss
-   of a hand, crossing, minimum size, bounds, and both-release rearming.
-6. Give panels different filters and LIVE/DELAYED/FROZEN modes. Move something in view;
-   overlapping LIVE panels must remain live, even over frozen/effected panels.
-7. Test F/fist, filters, Delete, and R. Only the active panel is affected until
-   R explicitly clears all. Test a default filter before first creation and
-   confirm new panels inherit it rather than an active panel's later changes.
-8. Test toolbar overlap/held pinches, keyboard alternatives, busy-state disabling,
-   C during creation/drag/resize, same-size recovery retention, and changed-size
-   clearing. Repeat exit controls and plain `--no-tracking`.
-9. Just after startup or C, create/select a panel and press T. Check `Buffering...`
-   until the configured amount of history exists, and verify F/fist during warm-up is ignored
-   with feedback. Once ready, compare motion in LIVE and DELAYED panels.
-10. Move/resize a delayed panel across distinct regions. Check it shows those
-    regions from the configured delay ago, including when overlapping filtered panels.
-    Freeze with F and with a deliberate fist; only the active displayed source
-    should freeze. T must be dimmed/rejected while frozen. Unfreeze back to DELAYED,
-    then T back to LIVE. Test independent modes across all four panels.
-11. Reconnect with delayed and frozen panels present: at matching dimensions,
-    modes/crops survive and delayed panels warm up again. Assess responsiveness,
-    sampling smoothness, and memory use during a longer session yourself.
-12. Adjust different delayed panels to 0.5, 1.5, and 2.5 seconds using the slider
-    and bracket keys. Check the endpoints, 0.1-second steps, marker, and label.
-    Freeze/unfreeze and toggle T; each panel must keep its own value.
-13. Pinch outside the track and move onto it: adjustment must not start. Freshly
-    pinch inside it, move outside horizontally/vertically, and verify only the
-    owning hand changes the delay. Release or lose that hand; held pinches must
-    not become grabs, resizes, or toolbar actions until both hands release.
-14. Capture the slider where it overlaps a panel/handle. Attempt filters, New,
-    Delete, T, F/fist, and bracket keys while adjusting; they must be blocked.
-    Test R, C, Q, and Escape during capture. Confirm LIVE/FROZEN, manipulation,
-    creation, and recovery disable adjustment, and plain `--no-tracking` stays plain.
-15. Open H during creation, dragging, resizing, a fist hold, and slider capture.
-    Verify drafts stop safely, committed panels/content remain, and workspace
-    keys/gestures do nothing while help is visible. Close with H and Escape;
-    held pinches must not act until both hands release. Q must always exit.
-16. Review labels, active/inactive borders, handles, buffering, fist progress,
-    and reconnect status at 1280x720 and 640x480. Check small raw frames show
-    the hidden-controls notice while keyboard alternatives still work. Synthetic
-    previews are a visual check, not evidence of live gesture usability.
+## Manual walkthrough and limitations
 
-Live testing remains manual. The 2D pose heuristics and spatial hand association
-can miss poses or confuse IDs with occlusion, edge-on hands, or fast crossings.
-Use good lighting and distinct, visible hands. Frozen width/height changes can
-stretch images. Rendering cost grows with panel area/filter complexity; live
-performance and camera recovery have not been tested by the automated checks.
+1. Start in SELECT. Choose New/N, release both hands, create with two pinches,
+   then release. Confirm SELECT returns and the new panel is active.
+2. Create another overlapping panel. Freshly pinch to select the topmost or an
+   exposed lower region; neither should move. Choose Move/M, release, then drag
+   only the active panel. Pinching another panel must not select it.
+3. Choose Resize/S, release, and pinch diagonal active handles. Verify release,
+   hand loss, crossing, bounds, and minimum size. Try Escape mid-move/mid-resize:
+   starting geometry must return and SELECT must resume after release.
+4. Use Effects/E and Time/Y; only one should be open. Try filters, T, slider,
+   F/Freeze, Delete, and keyboard alternatives. Give panels different modes,
+   delays, and effects. Freeze delayed content, then unfreeze back to its mode.
+5. Confirm UI pinches never grab panels beneath them. Fists should work only
+   after a full-open observation in idle SELECT with closed submenus. Held
+   pinches must not become actions after tool switches or controller loss.
+6. Toggle D and compare skeleton/debug labels with the always-visible pointers.
+   Check eligible hover highlights, instructions, progress, and buffering.
+7. Exercise H, C, R, Q, and Escape during edits/creation/slider capture. Help
+   must gate controls; closing must require release. Recovery must preserve
+   same-size panel content while delayed sources buffer again.
+8. Check native 1280x720 and 640x480 layouts, small-frame keyboard access,
+   `--no-tracking`, and an extended session's responsiveness/memory yourself.
+
+Live usability and performance are intentionally left for manual assessment.
+Pose heuristics may miss edge-on/occluded hands or confuse IDs during fast
+crossings. Use distinct visible hands and good lighting. Frozen resizing can
+stretch images. Delayed sampling reduces detail and smoothness; native camera
+latency and processing gaps add to visible delay. Rendering costs grow with
+panel area and effect complexity. No recording, export, templates, or session
+persistence is implemented.

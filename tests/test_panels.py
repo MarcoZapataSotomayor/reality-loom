@@ -33,12 +33,12 @@ class PanelCollectionTests(unittest.TestCase):
         self.update(pair())
 
     def create(self, first=(100, 100), second=(300, 300)):
-        if self.scene.panels:
-            self.assertTrue(self.scene.begin_creation())
-            self.release()
+        self.assertTrue(self.scene.begin_creation())
+        self.release()
         self.update(pair(first, second, True))
         self.assertEqual(self.scene.state, "CREATING")
         self.update(pair(first, second))
+        self.release()
         self.assertEqual(self.scene.state, "PLACED")
         return self.scene.active_panel
 
@@ -106,7 +106,8 @@ class PanelCollectionTests(unittest.TestCase):
         self.update([hand(7, (200, 200))])
         self.update([hand(7, (200, 200), True)])
         self.assertEqual(self.scene.active_id, upper.panel_id)
-        self.assertEqual(self.scene.state, "DRAGGING")
+        self.assertEqual(self.scene.state, "WAITING_FOR_RELEASE")
+        self.release()
         self.update([hand(7, (200, 200))])
         self.update([hand(7, (80, 80))])
         before = lower.rectangle
@@ -118,6 +119,8 @@ class PanelCollectionTests(unittest.TestCase):
     def test_operation_owner_stays_stable_and_other_panel_does_not_take_over(self):
         lower = self.create((50, 50), (250, 250))
         upper = self.create((350, 100), (550, 300))
+        self.scene.switch_tool("MOVE")
+        self.release()
         self.update([hand(1, (400, 180)), hand(2, (100, 100))])
         self.update([hand(1, (400, 180), True), hand(2, (100, 100))])
         before_lower = lower.rectangle
@@ -127,7 +130,7 @@ class PanelCollectionTests(unittest.TestCase):
         self.assertEqual(lower.rectangle, before_lower)
         last_upper = upper.rectangle
         self.update([hand(2, (100, 100), True)])
-        self.assertEqual(self.scene.state, "PLACED")
+        self.assertEqual(self.scene.state, "WAITING_FOR_RELEASE")
         self.update([hand(2, (120, 120), True)])
         self.assertEqual(self.scene.active_id, upper.panel_id)
         self.assertEqual(upper.rectangle, last_upper)
@@ -135,6 +138,8 @@ class PanelCollectionTests(unittest.TestCase):
     def test_active_resize_priority_and_id_roles_survive_reordering(self):
         lower = self.create((50, 50), (550, 400))
         upper = self.create((150, 150), (350, 350))
+        self.scene.switch_tool("RESIZE")
+        self.release()
         self.update(pair((150, 150), (350, 350), True))
         self.assertEqual(self.scene.state, "RESIZING")
         self.assertEqual(self.scene.active_id, upper.panel_id)
@@ -210,7 +215,7 @@ class PanelCollectionTests(unittest.TestCase):
         self.assertEqual(self.scene.state, "WAITING_FOR_RELEASE")
         self.scene.finish_camera_reconnect((WIDTH, HEIGHT), (1280, 720))
         self.assertEqual(self.scene.panels, [])
-        self.assertTrue(self.scene.creation_mode)
+        self.assertFalse(self.scene.creation_mode)
 
     def test_c_cancels_drag_or_resize_at_latest_geometry_without_losing_other_panels(self):
         for resize in (False, True):
@@ -221,6 +226,8 @@ class PanelCollectionTests(unittest.TestCase):
                 raw = np.full((HEIGHT, WIDTH, 3), 40, dtype=np.uint8)
                 self.scene.toggle_frozen(raw)
                 image = active.frozen_image
+                self.scene.switch_tool("RESIZE" if resize else "MOVE")
+                self.release()
                 if resize:
                     hands = pair((350, 100), (550, 300), True)
                     self.update(hands)
@@ -248,19 +255,23 @@ class PanelCollectionTests(unittest.TestCase):
         self.update([hand(7, (100, 100), True), hand(3, (450, 200), True)])
         self.assertEqual(self.scene.active_id, right.panel_id)
         self.assertEqual(self.scene.panels[0], left)
-        self.assertEqual(self.scene.state, "DRAGGING")
+        self.assertEqual(self.scene.state, "WAITING_FOR_RELEASE")
 
 
 class PanelRenderingTests(unittest.TestCase):
     def scene_with_two(self, second_filter="ORIGINAL"):
         scene = PanelCollection()
+        scene.begin_creation()
+        scene.update(pair(), WIDTH, HEIGHT)
         scene.update(pair((40, 40), (220, 220), True), WIDTH, HEIGHT)
         scene.update(pair((40, 40), (220, 220)), WIDTH, HEIGHT)
+        scene.update(pair(), WIDTH, HEIGHT)
         first = scene.active_panel
         scene.begin_creation()
         scene.update(pair(), WIDTH, HEIGHT)
         scene.update(pair((120, 120), (300, 300), True), WIDTH, HEIGHT)
         scene.update(pair((120, 120), (300, 300)), WIDTH, HEIGHT)
+        scene.update(pair(), WIDTH, HEIGHT)
         scene.active_panel.filter_name = second_filter
         return scene, first, scene.active_panel
 

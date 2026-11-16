@@ -5,15 +5,17 @@ from ui import ACCENT, MUTED, Box, surface, text
 
 HELP_LINES = (
     "H / Esc: close help     Q: exit",
-    "N: new panel   Del: delete   R: clear all",
+    "V: select   M: move   S: resize   N: create",
+    "E: effects   Y: time   Del: delete   R: clear all",
     "1-4: filter     F: freeze / unfreeze",
     "T: live / delayed     [ / ]: delay step",
-    "C: reconnect camera",
-    "Two pinches: create a panel",
-    "Fresh pinch: select / drag / toolbar",
-    "Opposite corner pinches: resize",
+    "C: reconnect   D: landmark debug overlays",
+    "Create tool: two pinches, move, release",
+    "Select / Move: fresh pinch on eligible panel",
+    "Resize tool: pinch opposite active handles",
     "Slider: pinch, move, release",
-    "Fist: open fully, then hold outside panel 0.8 s",
+    "Fist: SELECT only; open, hold outside 0.8 s",
+    "Esc: restore active edit; idle SELECT exits",
 )
 
 

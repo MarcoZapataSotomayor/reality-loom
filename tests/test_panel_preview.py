@@ -22,10 +22,10 @@ def samples(pinching=False, first=(100, 100), second=(300, 300)):
 
 
 def add_panel(scene, first=(100, 100), second=(300, 300)):
-    if scene.panels:
-        scene.begin_creation()
-        scene.update(samples(), WIDTH, HEIGHT)
+    scene.begin_creation()
+    scene.update(samples(), WIDTH, HEIGHT)
     scene.update(samples(True, first, second), WIDTH, HEIGHT)
+    scene.update(samples(False, first, second), WIDTH, HEIGHT)
     scene.update(samples(False, first, second), WIDTH, HEIGHT)
     return scene.active_panel
 
@@ -106,6 +106,8 @@ class PanelPreviewTests(unittest.TestCase):
         self.assertEqual(len(scene.panels), MAX_PANELS)
         self.assertTrue(any("Limit: 4 panels" in text for text in labels))
         scene.update(samples(), WIDTH, HEIGHT)
+        scene.switch_tool("MOVE")
+        scene.update(samples(), WIDTH, HEIGHT)
         scene.update([pose_hand("open", 1, (200, 200))], WIDTH, HEIGHT)
         scene.update([pose_hand("neutral", 1, (200, 200), pinching=True)], WIDTH, HEIGHT)
         self.assertEqual(scene.state, "DRAGGING")
@@ -118,6 +120,8 @@ class PanelPreviewTests(unittest.TestCase):
         scene = PanelCollection()
         add_panel(scene)
         active = add_panel(scene, (350, 100), (550, 300))
+        scene.switch_tool("RESIZE")
+        scene.update(samples(), WIDTH, HEIGHT)
         display = preview_support.frame()
         with patch.object(cv2, "circle", wraps=cv2.circle) as circles:
             main.draw_rectangle_interaction(display, scene)
